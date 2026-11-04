@@ -21,7 +21,7 @@ window.__ModuleLoader__.load({
 
     const React = require('react');
     const h = React.createElement;
-    const { useState, useEffect, useMemo, useCallback, useRef } = React;
+    const { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } = React;
 
     /** Locale namespace owned by this plugin. */
     const NS = 'dsh-archive';
@@ -74,59 +74,83 @@ window.__ModuleLoader__.load({
 
     /**
      * Only `--dsw-alias-*` theme tokens are used for surfaces, text, and
-     * borders, so light and dark themes stay consistent. Spacing and type
-     * sizes follow the shipped panel/settings pages; a soft shadow is the one
-     * literal value, as in the other plugin panels.
+     * borders, so light and dark themes stay consistent. Dividers derive their
+     * weight from `--dsw-alias-label-secondary` so a line keeps the same
+     * contrast on light and dark surfaces, and list titles mix one of eight
+     * hues with the theme's primary label for the same reason. One soft shadow
+     * is the only literal color, as in the other plugin panels.
      */
-    const CSS = `
-.ar-root{box-sizing:border-box;display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;padding-top:var(--dsh-frame-top-clearance,0px);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}
+    const CSS = `.ar-root{box-sizing:border-box;display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;padding-top:var(--dsh-frame-top-clearance,0px);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;--ar-line:var(--dsw-alias-border-l1);--ar-line-strong:var(--dsw-alias-border-l2)}
 .ar-root *,.ar-root *::before,.ar-root *::after{box-sizing:border-box}
-.ar-header{flex:none;display:flex;align-items:center;gap:10px;height:50px;padding:0 14px;border-bottom:.5px solid var(--dsw-alias-border-l1)}
-.ar-brand{flex:initial;display:flex;align-items:center;gap:8px;min-width:0;max-width:52%}
+/* Page header: the plugin name is the page's first-level title. */
+.ar-header{flex:none;display:flex;align-items:center;gap:12px;height:50px;padding:0 16px;border-bottom:1px solid var(--ar-line-strong)}
+.ar-brand{flex:initial;display:flex;align-items:center;gap:9px;min-width:0}
 .ar-brand__glyph{flex:none;display:inline-flex;align-items:center;color:var(--dsw-alias-brand-primary)}
-.ar-brand__name{flex:none;font-size:14px;font-weight:600;letter-spacing:.01em}
-.ar-brand__divider{flex:none;width:1px;height:12px;margin:0 4px;background:var(--dsw-alias-border-l1)}
-.ar-brand__meta{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--dsw-alias-label-secondary);font-size:12.5px}
+.ar-brand__name{flex:none;margin:0;font-size:18px;line-height:24px;font-weight:600;letter-spacing:.005em;white-space:nowrap}
 .ar-header__spacer{flex:1;min-width:8px}
-.ar-search{position:relative;flex:none;display:flex;align-items:center;width:200px;height:28px;border:.5px solid var(--dsw-alias-border-l1);border-radius:7px;background:var(--dsw-alias-bg-layer-1);transition:border-color .16s ease}
+.ar-search{position:relative;flex:none;display:flex;align-items:center;width:210px;height:28px;border:1px solid var(--ar-line);border-radius:7px;background:var(--dsw-alias-bg-layer-1);transition:border-color .16s ease}
 .ar-search:focus-within{border-color:var(--dsw-alias-brand-primary)}
 .ar-search__glyph{position:absolute;left:7px;display:inline-flex;color:var(--dsw-alias-label-secondary);pointer-events:none}
 .ar-search__input{width:100%;height:100%;padding:0 8px 0 26px;border:0;border-radius:inherit;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;outline:none}
 .ar-search__input::placeholder{color:var(--dsw-alias-label-secondary);opacity:.85}
 .ar-body{display:flex;flex:1;min-height:0}
-.ar-side{flex:none;display:flex;flex-direction:column;width:220px;min-height:0;border-right:.5px solid var(--dsw-alias-border-l1)}
-.ar-side__head{flex:none;display:flex;align-items:center;gap:6px;height:34px;padding:0 14px;color:var(--dsw-alias-label-secondary);font-size:11.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
-.ar-side__count{margin-left:auto;font-size:11.5px;font-weight:500;letter-spacing:0;font-variant-numeric:tabular-nums}
-.ar-side__list{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:1px;padding:2px 8px 16px}
-.ar-group{display:flex;align-items:center;gap:8px;width:100%;min-width:0;height:30px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;text-align:left;cursor:pointer;transition:background-color .12s ease,color .12s ease}
+/* Left rail. Its band header shares one height with the right column's, so both lists start on the same line. */
+.ar-side{flex:none;display:flex;flex-direction:column;width:220px;min-height:0;border-right:1px solid var(--ar-line-strong)}
+.ar-side__head{flex:none;display:flex;align-items:center;gap:6px;height:40px;padding:0 16px;border-bottom:1px solid var(--ar-line);color:var(--dsw-alias-label-secondary);font-size:11.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.ar-side__list{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:1px;padding:6px 8px 10px}
+.ar-side__foot{flex:none;display:flex;flex-direction:column;gap:1px;padding:10px 16px 12px;border-top:1px solid var(--ar-line);color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:16px;font-variant-numeric:tabular-nums}
+.ar-side__foot span{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.ar-group{display:flex;align-items:center;gap:8px;width:100%;min-width:0;height:32px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;text-align:left;cursor:pointer;transition:background-color .12s ease,color .12s ease}
 .ar-group:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
 .ar-group[data-active="true"]{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-weight:600}
 .ar-group[data-dim="true"]{opacity:.45}
 .ar-group:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
 .ar-group__name{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .ar-group__count{flex:none;font-size:11.5px;font-variant-numeric:tabular-nums;opacity:.85}
-.ar-main{flex:1;min-width:0;min-height:0;overflow-y:auto;padding:18px 24px 44px}
-.ar-main__head{display:flex;align-items:flex-start;gap:12px}
-.ar-main__titles{flex:1;min-width:0}
-.ar-main__title{margin:0;font-size:20px;line-height:26px;font-weight:600;letter-spacing:-.01em;overflow-wrap:anywhere}
-.ar-main__meta{margin-top:2px;font-size:12.5px;line-height:18px;color:var(--dsw-alias-label-secondary)}
-.ar-main__actions{flex:none;display:flex;align-items:center;gap:6px;padding-top:2px}
+/* Right column: one band header, then the group's lists. Text sits on the 44px rail used by section titles. */
+.ar-main{flex:1;min-width:0;min-height:0;overflow-y:auto;scrollbar-gutter:stable;padding:0 0 40px}
+/* A group switch remounts this wrapper (keyed by group id), replaying the entry animation. */
+.ar-view{animation:ar-view-in .26s cubic-bezier(.2,.7,.2,1) both}
+.ar-view[data-dir="up"]{--ar-shift:-6px}
+.ar-view[data-dir="down"]{--ar-shift:6px}
+.ar-main__head{display:flex;align-items:center;gap:12px;height:40px;padding:0 16px 0 44px;border-bottom:1px solid var(--ar-line)}
+.ar-main__titles{flex:1;min-width:0;display:flex;align-items:center;gap:8px}
+.ar-main__title{flex:0 1 auto;min-width:0;margin:0;font-size:16px;line-height:22px;font-weight:600;letter-spacing:-.005em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ar-main__meta{flex:none;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
+.ar-main__actions{flex:none;display:flex;align-items:center;gap:4px}
 .ar-btn{appearance:none;display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 9px;border:.5px solid transparent;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer;transition:background-color .14s ease,color .14s ease}
 .ar-btn:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
 .ar-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
-.ar-sections{display:flex;flex-direction:column}
-.ar-sections>.ar-sec{border-top:.5px solid var(--dsw-alias-border-l1);margin-top:12px;padding-top:6px}
-.ar-sections>.ar-sec:first-child{border-top:0;margin-top:6px;padding-top:0}
-.ar-sec__head{display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;font-weight:600;text-align:left;cursor:pointer}
+.ar-sections{display:flex;flex-direction:column;padding:6px 0 0}
+.ar-sections>.ar-sec{border-top:1px solid var(--ar-line)}
+.ar-sections>.ar-sec:first-child{border-top:0}
+.ar-sec__head{display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 16px 0 24px;border:0;border-radius:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13.5px;font-weight:600;text-align:left;cursor:pointer}
 button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
+/* An expanded pane underlines its header band, as a VS Code pane does. */
+.ar-sec[data-open="true"] .ar-sec__head{box-shadow:inset 0 -1px 0 var(--ar-line)}
 .ar-sec__head[data-static="true"]{cursor:default}
 .ar-sec__head:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
-.ar-sec__chev{flex:none;display:inline-flex;align-items:center;color:var(--dsw-alias-label-secondary);transition:transform .16s ease}
+.ar-sec__chev{flex:none;display:inline-flex;align-items:center;color:color-mix(in oklab,hsl(var(--ar-hue,214) 70% 46%) 62%,var(--dsw-alias-label-secondary));transition:transform .16s ease}
 .ar-sec[data-open="true"] .ar-sec__chev{transform:rotate(90deg)}
-.ar-sec__title{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.ar-sec__title{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:color-mix(in oklab,hsl(var(--ar-hue,214) 70% 46%) 72%,var(--dsw-alias-label-primary))}
 .ar-sec__count{flex:none;font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
-.ar-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:10px;padding:7px 0 3px}
-.ar-card{display:flex;align-items:flex-start;gap:9px;min-width:0;padding:11px 12px;border:.5px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px;text-decoration:none;transition:border-color .16s ease,background-color .16s ease}
+/* The card body stays mounted and animates its row from 0fr to 1fr, so both open and close have a height transition; visibility keeps collapsed cards out of the tab order. */
+.ar-sec__body{display:grid;grid-template-rows:0fr;visibility:hidden;transition:grid-template-rows .24s cubic-bezier(.2,.7,.2,1),visibility 0s linear .24s}
+.ar-sec[data-open="true"] .ar-sec__body{grid-template-rows:1fr;visibility:visible;transition:grid-template-rows .24s cubic-bezier(.2,.7,.2,1),visibility 0s}
+.ar-sec__inner{min-height:0;overflow:hidden}
+/* One hue per list, cycling; mixing with the theme's primary label keeps light and dark themes readable. */
+.ar-sec[data-tone="0"]{--ar-hue:6}
+.ar-sec[data-tone="1"]{--ar-hue:32}
+.ar-sec[data-tone="2"]{--ar-hue:88}
+.ar-sec[data-tone="3"]{--ar-hue:148}
+.ar-sec[data-tone="4"]{--ar-hue:186}
+.ar-sec[data-tone="5"]{--ar-hue:214}
+.ar-sec[data-tone="6"]{--ar-hue:260}
+.ar-sec[data-tone="7"]{--ar-hue:322}
+.ar-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:10px;padding:6px 16px 4px 44px}
+.ar-sec[data-open="true"] .ar-grid{animation:ar-fade-in .2s ease both}
+.ar-sec:not([data-open="true"]) .ar-grid{opacity:0;transition:opacity .18s ease}
+.ar-card{display:flex;align-items:flex-start;gap:9px;min-width:0;padding:11px 12px;border:.5px solid var(--ar-line);border-radius:10px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px;text-decoration:none;transition:border-color .16s ease,background-color .16s ease}
 .ar-card:hover{border-color:var(--dsw-alias-border-l2);background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 55%,var(--dsw-alias-bg-layer-1))}
 .ar-card:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 .ar-card__title{min-width:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
@@ -135,11 +159,11 @@ button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
 .ar-state{display:flex;flex:1;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:56px 24px;color:var(--dsw-alias-label-secondary);font-size:13px;text-align:center}
 .ar-state__title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:600}
 .ar-state__hint{max-width:420px;font-size:12.5px;line-height:18px}
-.ar-toast{position:fixed;z-index:1200;left:50%;bottom:26px;transform:translateX(-50%);max-width:min(560px,calc(100vw - 48px));padding:7px 14px;border:.5px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);font-size:12.5px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 8px 28px rgba(0,0,0,.2)}
+.ar-toast{position:fixed;z-index:1200;left:50%;bottom:26px;transform:translateX(-50%);max-width:min(560px,calc(100vw - 48px));padding:7px 14px;border:1px solid var(--ar-line);border-radius:999px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);font-size:12.5px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 8px 28px rgba(0,0,0,.2)}
 @keyframes ar-fade-in{from{opacity:0}}
+@keyframes ar-view-in{from{opacity:0;transform:translateY(var(--ar-shift,6px))}}
 .ar-toast{animation:ar-fade-in .16s ease both}
-@media (prefers-reduced-motion:reduce){.ar-toast,.ar-sec__chev,.ar-card{animation:none;transition:none}}
-`;
+@media (prefers-reduced-motion:reduce){.ar-toast,.ar-view,.ar-sec__body,.ar-sec__chev,.ar-grid,.ar-card{animation:none;transition:none}}`;
 
     /** The archive-box glyph, shared by the sidebar row and the page header. */
     function ArchiveGlyph({ size, strokeWidth }) {
@@ -272,8 +296,12 @@ button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
       );
     }
 
-    /** A second-level folder: its header toggles a grid of bookmark cards. */
-    function ListSection({ list, open, collapsible, onToggle, onOpen }) {
+    /**
+     * A second-level folder: its header toggles a grid of bookmark cards.
+     * `tone` selects one of the eight title hues, so a list keeps the same
+     * color while the query filters the grid.
+     */
+    function ListSection({ list, tone, open, collapsible, onToggle, onOpen }) {
       const inner = [
         h(Chevron, { key: 'chev', open }),
         h('span', { key: 'title', className: 'ar-sec__title' }, list.title),
@@ -297,18 +325,25 @@ button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
         {
           className: 'ar-sec',
           'data-open': open ? 'true' : 'false',
+          'data-tone': String(tone),
           'aria-label': list.title,
         },
         head,
-        open
-          ? h(
+        h(
+          'div',
+          { className: 'ar-sec__body' },
+          h(
+            'div',
+            { className: 'ar-sec__inner' },
+            h(
               'div',
               { className: 'ar-grid' },
               list.cards.map((card) =>
                 h(BookmarkCard, { key: card.id, card, onOpen }),
               ),
-            )
-          : null,
+            ),
+          ),
+        ),
       );
     }
 
@@ -436,7 +471,8 @@ button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
         return () => clearTimeout(timer);
       }, [toast]);
 
-      useEffect(() => {
+      /* Reset before paint, so a group switch never flashes the old scroll offset. */
+      useLayoutEffect(() => {
         if (mainRef.current !== null) mainRef.current.scrollTop = 0;
       }, [activeGroupId]);
 
@@ -469,6 +505,17 @@ button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
         }
         return counts;
       }, [groups, queryText]);
+
+      /**
+       * A list's hue follows its position in the group, not its position in
+       * the filtered view, so a search does not repaint the remaining lists.
+       */
+      const toneByList = useMemo(() => {
+        const tones = new Map();
+        if (activeGroup === null) return tones;
+        activeGroup.lists.forEach((list, index) => tones.set(list.id, index % 8));
+        return tones;
+      }, [activeGroup]);
 
       const openBookmark = useCallback(
         (url) => {
@@ -503,7 +550,29 @@ button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
         setExpanded(next);
       }, [activeGroup]);
 
+      /** The one header button collapses only when every list is already open. */
+      const allListsOpen =
+        activeGroup !== null && activeGroup.lists.every((list) => expanded[list.id] !== false);
+
       const stats = collection?.stats ?? { groups: 0, lists: 0, bookmarks: 0 };
+
+      /**
+       * Which way the right column should slide when the group changes: the
+       * new group sits below the previous one, so its content enters from
+       * below (or from above when moving up the rail).
+       */
+      const lastGroupIndexRef = useRef(-1);
+      const groupIndex =
+        activeGroup === null ? -1 : groups.findIndex((group) => group.id === activeGroup.id);
+      const switchDir =
+        groupIndex !== -1 &&
+        lastGroupIndexRef.current !== -1 &&
+        groupIndex < lastGroupIndexRef.current
+          ? 'up'
+          : 'down';
+      useEffect(() => {
+        lastGroupIndexRef.current = groupIndex;
+      }, [groupIndex]);
 
       const header = h(
         'header',
@@ -511,22 +580,8 @@ button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
         h(
           'div',
           { className: 'ar-brand' },
-          h('span', { className: 'ar-brand__glyph' }, h(ArchiveGlyph, { size: 18 })),
-          h('span', { className: 'ar-brand__name' }, t('title')),
-          status === 'ready'
-            ? [
-                h('span', { className: 'ar-brand__divider', key: 'divider' }),
-                h(
-                  'span',
-                  { className: 'ar-brand__meta', key: 'meta' },
-                  [
-                    t('count.groups', { n: stats.groups }),
-                    t('count.lists', { n: stats.lists }),
-                    t('count.bookmarks', { n: stats.bookmarks }),
-                  ].join(' · '),
-                ),
-              ]
-            : null,
+          h('span', { className: 'ar-brand__glyph' }, h(ArchiveGlyph, { size: 20 })),
+          h('h1', { className: 'ar-brand__name' }, t('title')),
         ),
         h('span', { className: 'ar-header__spacer' }),
         h(
@@ -587,7 +642,6 @@ button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
           'div',
           { className: 'ar-side__head' },
           h('span', null, t('groups')),
-          h('span', { className: 'ar-side__count' }, groups.length),
         ),
         h(
           'div',
@@ -603,6 +657,13 @@ button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
             }),
           ),
         ),
+        h(
+          'div',
+          { className: 'ar-side__foot' },
+          h('span', null, t('count.groups', { n: stats.groups })),
+          h('span', null, t('count.lists', { n: stats.lists })),
+          h('span', null, t('count.bookmarks', { n: stats.bookmarks })),
+        ),
       );
 
       const mainChildren = [];
@@ -615,7 +676,7 @@ button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
             h(
               'div',
               { className: 'ar-main__titles' },
-              h('h1', { className: 'ar-main__title' }, activeGroup.name),
+              h('h2', { className: 'ar-main__title', title: activeGroup.name }, activeGroup.name),
               h(
                 'div',
                 { className: 'ar-main__meta' },
@@ -635,13 +696,12 @@ button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
                   { className: 'ar-main__actions' },
                   h(
                     'button',
-                    { type: 'button', className: 'ar-btn', onClick: expandAll },
-                    t('expandAll'),
-                  ),
-                  h(
-                    'button',
-                    { type: 'button', className: 'ar-btn', onClick: collapseAll },
-                    t('collapseAll'),
+                    {
+                      type: 'button',
+                      className: 'ar-btn',
+                      onClick: allListsOpen ? collapseAll : expandAll,
+                    },
+                    allListsOpen ? t('collapseAll') : t('expandAll'),
                   ),
                 )
               : null,
@@ -670,6 +730,7 @@ button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
                 return h(ListSection, {
                   key: list.id,
                   list,
+                  tone: toneByList.get(list.id) ?? 0,
                   open,
                   collapsible: queryText === '',
                   onToggle: () => toggleList(list.id),
@@ -684,7 +745,15 @@ button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
       const main = h(
         'div',
         { className: 'ar-main', key: 'main', ref: mainRef },
-        mainChildren,
+        h(
+          'div',
+          {
+            className: 'ar-view',
+            key: activeGroup === null ? 'empty' : activeGroup.id,
+            'data-dir': switchDir,
+          },
+          mainChildren,
+        ),
       );
 
       return h(
