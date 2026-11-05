@@ -74,4 +74,66 @@ function PanelIcon({ size, active }) {
   return h(ArchiveGlyph, { size, strokeWidth: active ? 1.9 : 1.7 })
 }
 
-module.exports = { ArchiveGlyph, Chevron, SearchGlyph, PanelIcon }
+/** The card's delete affordance. */
+function TrashGlyph({ size }) {
+  return h(
+    'svg',
+    {
+      width: size === undefined ? 14 : size,
+      height: size === undefined ? 14 : size,
+      viewBox: '0 0 16 16',
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 1.5,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+      'aria-hidden': 'true',
+      focusable: 'false',
+    },
+    h('path', { d: 'M2.6 4.2h10.8' }),
+    h('path', { d: 'M5.2 4.2V3.1c0-.5.4-.9.9-.9h3.8c.5 0 .9.4.9.9v1.1' }),
+    h('path', { d: 'M4.1 4.2l.6 8.1c0 .5.4.9.9.9h4.8c.5 0 .9-.4.9-.9l.6-8.1' }),
+    h('path', { d: 'M6.7 6.8v3.9M9.3 6.8v3.9' }),
+  )
+}
+
+/** The checkmark inside the selection box. */
+function CheckGlyph({ size }) {
+  return h(
+    'svg',
+    {
+      width: size === undefined ? 11 : size,
+      height: size === undefined ? 11 : size,
+      viewBox: '0 0 12 12',
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 1.9,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+      'aria-hidden': 'true',
+      focusable: 'false',
+    },
+    h('path', { d: 'M2.2 6.2 4.9 8.9 9.8 3.6' }),
+  )
+}
+
+/** Small close mark for summary rows. */
+function CloseGlyph({ size }) {
+  return h(
+    'svg',
+    {
+      width: size === undefined ? 11 : size,
+      height: size === undefined ? 11 : size,
+      viewBox: '0 0 12 12',
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 1.6,
+      strokeLinecap: 'round',
+      'aria-hidden': 'true',
+      focusable: 'false',
+    },
+    h('path', { d: 'M3 3l6 6M9 3 3 9' }),
+  )
+}
+
+module.exports = { ArchiveGlyph, Chevron, SearchGlyph, PanelIcon, TrashGlyph, CheckGlyph, CloseGlyph }

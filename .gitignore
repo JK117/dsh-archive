@@ -1,0 +1,4 @@
+# The Host writes the library atomically and keeps a one-file backup; neither
+# should end up in version control.
+data/*.bak
+data/*.tmp-*

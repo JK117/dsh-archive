@@ -6,15 +6,16 @@ const PANEL_ID = 'archive'
 
 const LIBRARY_URL = '/dsh-archive/bookmarks'
 const OPEN_URL = '/dsh-archive/open'
+const MUTATE_URL = '/dsh-archive/mutate'
 
 /** Selected group + collapsed lists. Keyed by the Host-provided ids. */
-const STATE_KEY = 'dsh-archive:state:v1'
+const STATE_KEY = 'dsh-archive:state:v2'
 
 /**
- * Manual order per level. v2 stores `bookmarks` (the data model's name) rather
- * than the old render-only `cards`.
+ * Manual order per level. v3 belongs to the content-derived ids; the old
+ * positional `v2` order is intentionally not migrated.
  */
-const ORDER_KEY = 'dsh-archive:order:v2'
+const ORDER_KEY = 'dsh-archive:order:v3'
 
 /** Touch only: a short hold separates a drag from a scroll gesture. */
 const HOLD_MS = 280
@@ -33,6 +34,7 @@ module.exports = {
   PANEL_ID,
   LIBRARY_URL,
   OPEN_URL,
+  MUTATE_URL,
   STATE_KEY,
   ORDER_KEY,
   HOLD_MS,

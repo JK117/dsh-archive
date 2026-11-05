@@ -4,15 +4,16 @@
  * helpers, local storage, and the route validation paths.
  */
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 
-import { normalizeLibrary } from '../lib/library.js'
-import { handleLibrary, handleOpen } from '../routes.js'
+import { createLibraryStore, normalizeLibrary } from '../lib/library.js'
+import { handleLibrary, handleMutate, handleOpen } from '../routes.js'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const requireFromSource = createRequire(path.join(ROOT, 'src', 'client', 'index.js'))
@@ -47,10 +48,84 @@ async function testDataModel() {
 
   const library = normalizeLibrary(raw)
   assert.deepEqual(library.stats, { groups: 13, lists: 55, bookmarks: 153 })
-  assert.equal(library.groups[0].id, 'g0')
-  assert.equal(library.groups[0].lists[0].id, 'g0-l0')
-  assert.equal(library.groups[0].lists[0].bookmarks[0].id, 'g0-l0-b0')
+  assert.match(library.groups[0].id, /^g_[A-Za-z0-9_-]+$/)
+  assert.match(library.groups[0].lists[0].id, /^l_[A-Za-z0-9_-]+$/)
+  assert.match(library.groups[0].lists[0].bookmarks[0].id, /^b_[A-Za-z0-9_-]+$/)
   assert.equal(library.groups[0].lists[0].count, library.groups[0].lists[0].bookmarks.length)
+}
+
+async function testEmptyStructures() {
+  const library = normalizeLibrary({
+    groups: [
+      { name: 'Empty group', lists: [] },
+      {
+        name: 'Mixed',
+        lists: [
+          { title: 'Empty list', bookmarks: [] },
+          { title: 'One', bookmarks: [{ title: 'A', url: 'https://a.example/' }] },
+        ],
+      },
+    ],
+  })
+  assert.deepEqual(library.stats, { groups: 2, lists: 2, bookmarks: 1 })
+  assert.equal(library.groups[0].lists.length, 0)
+  assert.equal(library.groups[1].lists[0].count, 0)
+  assert.equal(library.groups[1].lists[0].bookmarks.length, 0)
+
+  const empty = normalizeLibrary({ groups: [] })
+  assert.deepEqual(empty.stats, { groups: 0, lists: 0, bookmarks: 0 })
+  assert.deepEqual(empty.groups, [])
+
+  const duplicate = normalizeLibrary({
+    groups: [
+      {
+        name: 'Dup',
+        lists: [
+          {
+            title: 'Same',
+            bookmarks: [
+              { title: 'A', url: 'https://a.example/' },
+              { title: 'A', url: 'https://a.example/' },
+            ],
+          },
+        ],
+      },
+    ],
+  })
+  const ids = duplicate.groups[0].lists[0].bookmarks.map((bookmark) => bookmark.id)
+  assert.equal(new Set(ids).size, 2)
+}
+
+async function testStableIds() {
+  const raw = {
+    groups: [
+      {
+        name: 'CSS',
+        lists: [
+          {
+            title: 'Positioning',
+            bookmarks: [
+              { title: 'A', url: 'https://a.example/' },
+              { title: 'B', url: 'https://b.example/' },
+              { title: 'C', url: 'https://c.example/' },
+            ],
+          },
+          {
+            title: 'Flex',
+            bookmarks: [{ title: 'D', url: 'https://d.example/' }],
+          },
+        ],
+      },
+    ],
+  }
+  const before = normalizeLibrary(raw)
+  const idsBefore = before.groups[0].lists[0].bookmarks.map((bookmark) => bookmark.id)
+
+  raw.groups[0].lists[0].bookmarks.splice(0, 1)
+  const after = normalizeLibrary(raw)
+  const idsAfter = after.groups[0].lists[0].bookmarks.map((bookmark) => bookmark.id)
+  assert.deepEqual(idsAfter, idsBefore.slice(1))
+  assert.equal(after.groups[0].lists[1].bookmarks[0].id, before.groups[0].lists[1].bookmarks[0].id)
 }
 
 async function testClientBundle() {
@@ -123,7 +198,7 @@ async function testClientBundle() {
 }
 
 async function testOrderHelpers() {
-  const { applyOrder, moveId, collectionSignature } = requireFromSource('./order.js')
+  const { applyOrder, moveId, collectionSignature, pruneOrder } = requireFromSource('./order.js')
 
   const items = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
   assert.deepEqual(applyOrder(items, ['c', 'a']).map((item) => item.id), ['c', 'a', 'b'])
@@ -153,6 +228,13 @@ async function testOrderHelpers() {
   assert.equal(collectionSignature(iconChanged), signature)
   iconChanged.groups[0].lists[0].bookmarks[0].title = 'em'
   assert.notEqual(collectionSignature(iconChanged), signature)
+
+  const keptId = collection.groups[0].lists[0].bookmarks[0].id
+  const pruned = pruneOrder(
+    { groups: [], lists: {}, bookmarks: { 'g0-l0': [keptId, 'b_gone'] } },
+    collection,
+  )
+  assert.deepEqual(pruned.bookmarks['g0-l0'], [keptId])
 }
 
 async function testStorage() {
@@ -179,6 +261,147 @@ async function testStorage() {
   } finally {
     delete globalThis.window
   }
+}
+
+async function testMutations() {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'dsh-archive-smoke-'))
+  const file = path.join(dir, 'bookmarks.json')
+  try {
+    const fixture = {
+      groups: [
+        { name: 'Empty group', lists: [] },
+        {
+          name: 'B',
+          lists: [
+            {
+              title: 'one',
+              bookmarks: [
+                { title: 'x', url: 'https://x.example/' },
+                { title: 'y', url: 'https://y.example/' },
+              ],
+            },
+            { title: 'empty', bookmarks: [] },
+          ],
+        },
+      ],
+    }
+    await writeFile(file, JSON.stringify(fixture, null, 2))
+
+    const store = createLibraryStore(file)
+    const first = await store.load()
+    assert.equal(first.capabilities.mutate, true)
+    assert.deepEqual(first.stats, { groups: 2, lists: 2, bookmarks: 2 })
+
+    const xId = first.groups[1].lists[0].bookmarks[0].id
+    const yId = first.groups[1].lists[0].bookmarks[1].id
+    const emptyListId = first.groups[1].lists[1].id
+    const groupId = first.groups[1].id
+
+    const afterDelete = await store.mutate({ type: 'delete', ids: [xId] }, first.revision)
+    assert.deepEqual(afterDelete.stats, { groups: 2, lists: 2, bookmarks: 1 })
+    assert.equal(afterDelete.groups[0].lists.length, 0)
+    assert.equal(afterDelete.groups[1].lists[0].bookmarks[0].id, yId)
+    assert.equal(afterDelete.groups[1].lists[1].bookmarks.length, 0)
+
+    const afterMove = await store.mutate(
+      { type: 'move', ids: [yId], target: { groupId, listId: emptyListId } },
+      afterDelete.revision,
+    )
+    assert.deepEqual(afterMove.stats, { groups: 2, lists: 2, bookmarks: 1 })
+    assert.equal(afterMove.groups[1].lists[0].bookmarks.length, 0)
+    assert.equal(afterMove.groups[1].lists[1].bookmarks[0].title, 'y')
+    assert.equal(afterMove.groups[0].lists.length, 0)
+
+    const disk = JSON.parse(await readFile(file, 'utf8'))
+    assert.equal(disk.groups[0].lists.length, 0)
+    assert.equal(disk.groups[1].lists[0].bookmarks.length, 0)
+    assert.equal(disk.groups[1].lists[1].bookmarks[0].title, 'y')
+    assert.ok((await readFile(file + '.bak', 'utf8')).includes('Empty group'))
+
+    let stale = null
+    try {
+      await store.mutate({ type: 'delete', ids: [yId] }, first.revision)
+    } catch (error) {
+      stale = error
+    }
+    assert.equal(stale?.status, 409)
+    assert.equal(stale?.code, 'stale-library')
+    assert.ok(stale?.library)
+
+    let noop = null
+    const movedId = afterMove.groups[1].lists[1].bookmarks[0].id
+    try {
+      await store.mutate(
+        { type: 'move', ids: [movedId], target: { groupId, listId: emptyListId } },
+        afterMove.revision,
+      )
+    } catch (error) {
+      noop = error
+    }
+    assert.equal(noop?.status, 400)
+    assert.equal(noop?.code, 'no-op')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
+async function testSelectionHelpers() {
+  const {
+    toggleId,
+    selectedEntries,
+    countsByGroup,
+    groupCount,
+    hiddenByQuery,
+    targetStats,
+  } = requireFromSource('./selection.js')
+  const { emptyOrder } = requireFromSource('./order.js')
+
+  const groups = [
+    {
+      id: 'g1',
+      name: 'One',
+      lists: [
+        {
+          id: 'l1',
+          title: 'Alpha list',
+          bookmarks: [
+            { id: 'b1', title: 'Alpha', url: 'https://a.example/' },
+            { id: 'b2', title: 'Beta', url: 'https://b.example/' },
+          ],
+        },
+        {
+          id: 'l2',
+          title: 'Gamma list',
+          bookmarks: [{ id: 'b3', title: 'Gamma', url: 'https://g.example/' }],
+        },
+      ],
+    },
+    {
+      id: 'g2',
+      name: 'Two',
+      lists: [
+        {
+          id: 'l3',
+          title: 'Delta list',
+          bookmarks: [{ id: 'b4', title: 'Delta', url: 'https://d.example/' }],
+        },
+      ],
+    },
+  ]
+
+  let selected = new Set()
+  selected = toggleId(selected, 'b1')
+  selected = toggleId(selected, 'b3')
+  selected = toggleId(selected, 'b4')
+  assert.deepEqual([...selected], ['b1', 'b3', 'b4'])
+  assert.deepEqual([...toggleId(selected, 'b3')], ['b1', 'b4'])
+
+  const entries = selectedEntries(groups, emptyOrder(), selected)
+  assert.deepEqual(entries.map((entry) => entry.bookmark.id), ['b1', 'b3', 'b4'])
+  assert.deepEqual([...countsByGroup(entries)], [['g1', 2], ['g2', 1]])
+  assert.equal(groupCount(entries), 2)
+  assert.equal(hiddenByQuery(entries, 'gamma'), 2)
+  assert.deepEqual(targetStats(entries, 'l1'), { total: 3, inTarget: 1, moving: 2 })
 }
 
 function request({ method = 'GET', headers = {}, body = null } = {}) {
@@ -217,11 +440,14 @@ async function testRoutes() {
   await handleLibrary(request(), libraryResponse)
   await libraryResponse.finished
   assert.equal(libraryResponse.status, 200)
-  assert.deepEqual(JSON.parse(libraryResponse.body).stats, {
+  const libraryPayload = JSON.parse(libraryResponse.body)
+  assert.deepEqual(libraryPayload.stats, {
     groups: 13,
     lists: 55,
     bookmarks: 153,
   })
+  assert.match(libraryPayload.revision, /^[a-f0-9]{16}$/)
+  assert.equal(typeof libraryPayload.capabilities.mutate, 'boolean')
 
   const wrongMethod = response()
   await handleLibrary(request({ method: 'POST' }), wrongMethod)
@@ -256,11 +482,74 @@ async function testRoutes() {
   await invalidUrl.finished
   assert.equal(invalidUrl.status, 400)
   assert.deepEqual(JSON.parse(invalidUrl.body), { error: 'invalid-url' })
+
+  const mutateCrossOrigin = response()
+  await handleMutate(
+    request({
+      method: 'POST',
+      headers: { origin: 'https://evil.example', host: '127.0.0.1', 'content-type': 'application/json' },
+      body: '{}',
+    }),
+    mutateCrossOrigin,
+  )
+  await mutateCrossOrigin.finished
+  assert.equal(mutateCrossOrigin.status, 403)
+
+  const mutateWrongType = response()
+  await handleMutate(
+    request({ method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}' }),
+    mutateWrongType,
+  )
+  await mutateWrongType.finished
+  assert.equal(mutateWrongType.status, 415)
+
+  const mutateInvalidJson = response()
+  await handleMutate(
+    request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{',
+    }),
+    mutateInvalidJson,
+  )
+  await mutateInvalidJson.finished
+  assert.equal(mutateInvalidJson.status, 400)
+  assert.deepEqual(JSON.parse(mutateInvalidJson.body), { error: 'invalid-json' })
+
+  const mutateInvalidOp = response()
+  await handleMutate(
+    request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ revision: '', op: { type: 'nope', ids: ['x'] } }),
+    }),
+    mutateInvalidOp,
+  )
+  await mutateInvalidOp.finished
+  assert.equal(mutateInvalidOp.status, 400)
+  assert.deepEqual(JSON.parse(mutateInvalidOp.body), { error: 'invalid-op' })
+
+  const mutateUnknown = response()
+  await handleMutate(
+    request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ revision: '', op: { type: 'delete', ids: ['b_missing'] } }),
+    }),
+    mutateUnknown,
+  )
+  await mutateUnknown.finished
+  assert.equal(mutateUnknown.status, 404)
+  assert.deepEqual(JSON.parse(mutateUnknown.body), { error: 'unknown-bookmark' })
 }
 
 await test('data model', testDataModel)
+await test('empty structures', testEmptyStructures)
+await test('stable ids', testStableIds)
+await test('mutations', testMutations)
 await test('client bundle', testClientBundle)
 await test('order helpers', testOrderHelpers)
+await test('selection helpers', testSelectionHelpers)
 await test('local storage', testStorage)
 await test('routes', testRoutes)
 console.log('smoke: all checks passed')

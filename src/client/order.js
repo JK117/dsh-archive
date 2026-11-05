@@ -97,6 +97,29 @@ function countGroupMatches(groups, query) {
   return counts
 }
 
+/**
+ * Drops ids that no longer exist from the per-list order. A delete or move
+ * changes the library; keeping the old ids would let a bookmark moved away and
+ * later back "resurrect" its old slot, and would leave dead entries behind.
+ */
+function pruneOrder(order, collection) {
+  const valid = new Set()
+  for (const group of collection.groups) {
+    for (const list of group.lists) {
+      for (const bookmark of list.bookmarks) valid.add(bookmark.id)
+    }
+  }
+
+  let changed = false
+  const bookmarks = {}
+  for (const [listId, ids] of Object.entries(order.bookmarks)) {
+    const kept = ids.filter((id) => valid.has(id))
+    bookmarks[listId] = kept
+    if (kept.length !== ids.length) changed = true
+  }
+  return changed ? { ...order, bookmarks } : order
+}
+
 /** Returns a copy of the list with its bookmarks in the reader's order. */
 function orderListBookmarks(list, order) {
   return {
@@ -122,6 +145,7 @@ module.exports = {
   matchesQuery,
   collectionSignature,
   countGroupMatches,
+  pruneOrder,
   orderListBookmarks,
   filterListBookmarks,
 }

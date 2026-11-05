@@ -3,7 +3,7 @@ const React = require('react')
 const h = React.createElement
 const { ArchiveGlyph, SearchGlyph } = require('./glyphs.js')
 
-function PageHeader({ t, query, onQueryChange }) {
+function PageHeader({ t, query, onQueryChange, busy }) {
   return h(
     'header',
     { className: 'ar-header', key: 'header' },
@@ -25,6 +25,7 @@ function PageHeader({ t, query, onQueryChange }) {
         placeholder: t('search'),
         'aria-label': t('search'),
         spellCheck: false,
+        disabled: busy === true,
         onChange: (event) => onQueryChange(event.target.value),
       }),
     ),

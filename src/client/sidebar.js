@@ -5,7 +5,20 @@ const { GroupRow } = require('./bookmarks.js')
 const { Sortable } = require('./sortable.js')
 const { TONE_COUNT } = require('./constants.js')
 
-function GroupRail({ t, stats, groups, groupIds, groupMatches, activeGroupId, onSelect, onReorder }) {
+function GroupRail({
+  t,
+  stats,
+  groups,
+  groupIds,
+  groupMatches,
+  selectedByGroup,
+  activeGroupId,
+  selectionMode,
+  busy,
+  dragDisabled,
+  onSelect,
+  onReorder,
+}) {
   return h(
     'aside',
     { className: 'ar-side', key: 'side' },
@@ -16,18 +29,21 @@ function GroupRail({ t, stats, groups, groupIds, groupMatches, activeGroupId, on
         className: 'ar-side__list',
         ids: groupIds,
         axis: 'y',
-        disabled: groupIds.length < 2,
+        disabled: groupIds.length < 2 || busy === true || selectionMode === true || dragDisabled === true,
         onReorder,
         'aria-label': t('groups'),
       },
       groups.map((group, index) =>
         h(GroupRow, {
           key: group.id,
+          t,
           group,
           tone: index % TONE_COUNT,
           count: groupMatches === null ? group.count : groupMatches.get(group.id) ?? 0,
+          selectedCount: selectedByGroup.get(group.id) ?? 0,
           active: group.id === activeGroupId,
           dim: groupMatches !== null && (groupMatches.get(group.id) ?? 0) === 0,
+          disabled: busy === true,
           onClick: () => onSelect(group.id),
         }),
       ),

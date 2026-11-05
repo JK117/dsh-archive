@@ -1,7 +1,7 @@
 /**
  * The Archive page: state ownership plus the two-column layout. Data loading,
- * local persistence, ordering, search, and the header/side sections each live
- * in a small module; this file wires them together.
+ * local persistence, ordering, selection, search, and the header/side sections
+ * each live in a small module; this file wires them together.
  */
 const React = require('react')
 const {
@@ -20,7 +20,7 @@ const { GroupRail } = require('./sidebar.js')
 const { ListSection } = require('./bookmarks.js')
 const { Sortable } = require('./sortable.js')
 const { TONE_COUNT } = require('./constants.js')
-const { fetchLibrary, openBookmark: requestOpen } = require('./api.js')
+const { fetchLibrary, openBookmark: requestOpen, mutateLibrary: requestMutation } = require('./api.js')
 const {
   readSavedState,
   writeSavedState,
@@ -33,13 +33,24 @@ const {
   moveId,
   collectionSignature,
   countGroupMatches,
+  pruneOrder,
   orderListBookmarks,
   filterListBookmarks,
 } = require('./order.js')
+const {
+  toggleId,
+  selectedEntries,
+  countsByGroup,
+  groupCount,
+  hiddenByQuery,
+  targetStats,
+  entryMap,
+} = require('./selection.js')
+const { BatchDeleteDialog, MoveDialog, SelectionSummary } = require('./dialogs.js')
 
 /**
  * @param props - the slot's locale-injected `t` seat.
- * @returns the full two-column library, or a loading/error placeholder.
+ * @returns the full two-column library, or a loading/error/empty placeholder.
  */
 function Panel(props) {
   const t = props.t
@@ -51,8 +62,21 @@ function Panel(props) {
   const [query, setQuery] = useState('')
   const [toast, setToast] = useState(null)
   const [attempt, setAttempt] = useState(0)
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selected, setSelected] = useState(() => new Set())
+  const [confirmingId, setConfirmingId] = useState(null)
+  const [dialog, setDialog] = useState(null)
+  const [dialogError, setDialogError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [summaryOpen, setSummaryOpen] = useState(false)
+  const [focusRequest, setFocusRequest] = useState(null)
   const mainRef = useRef(null)
   const mountedRef = useRef(true)
+  const countButtonRef = useRef(null)
+  const cancelButtonRef = useRef(null)
+  const moveButtonRef = useRef(null)
+  const deleteButtonRef = useRef(null)
+  const dialogTriggerRef = useRef(null)
 
   const orderSignature = useMemo(
     () => (collection === null ? '' : collectionSignature(collection)),
@@ -76,12 +100,11 @@ function Panel(props) {
         const payload = await fetchLibrary(controller.signal)
         if (!live) return
 
-        const groups = payload.groups
         const saved = readSavedState()
         const preferred =
-          (saved.groupId && groups.some((group) => group.id === saved.groupId)
+          (saved.groupId && payload.groups.some((group) => group.id === saved.groupId)
             ? saved.groupId
-            : null) ?? groups[0].id
+            : null) ?? payload.groups[0]?.id ?? null
         const signature = collectionSignature(payload)
         const savedOrder = readSavedOrder()
 
@@ -97,6 +120,12 @@ function Panel(props) {
         )
         setActiveGroupId(preferred)
         setExpanded(saved.expanded)
+        setSelectionMode(false)
+        setSelected(new Set())
+        setConfirmingId(null)
+        setDialog(null)
+        setDialogError('')
+        setSummaryOpen(false)
         setStatus('ready')
       } catch (error) {
         if (!live || error?.name === 'AbortError') return
@@ -131,6 +160,20 @@ function Panel(props) {
   useLayoutEffect(() => {
     if (mainRef.current !== null) mainRef.current.scrollTop = 0
   }, [activeGroupId])
+
+  useEffect(() => {
+    if (focusRequest === null) return undefined
+    const frame = requestAnimationFrame(() => {
+      for (const selector of focusRequest.selectors) {
+        const element = document.querySelector(selector)
+        if (element !== null && typeof element.focus === 'function') {
+          element.focus({ preventScroll: true })
+          return
+        }
+      }
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [focusRequest, collection])
 
   const sourceGroups = useMemo(() => collection?.groups ?? [], [collection])
   const groups = useMemo(
@@ -167,9 +210,90 @@ function Panel(props) {
     () => visibleLists.map((list) => list.id),
     [visibleLists],
   )
+  const visibleCardCount = useMemo(
+    () => visibleLists.reduce((total, list) => total + list.bookmarks.length, 0),
+    [visibleLists],
+  )
   const groupMatches = useMemo(
     () => countGroupMatches(groups, queryText),
     [groups, queryText],
+  )
+
+  const entries = useMemo(
+    () => selectedEntries(groups, order, selected),
+    [groups, order, selected],
+  )
+  const selectedByGroup = useMemo(() => countsByGroup(entries), [entries])
+  const selectedGroupCount = useMemo(() => groupCount(entries), [entries])
+  const hiddenSelected = useMemo(
+    () => hiddenByQuery(entries, queryText),
+    [entries, queryText],
+  )
+  const selectionSummaryOpen = summaryOpen && entries.length > 0
+
+  const dialogEntries = useMemo(() => {
+    if (dialog === null) return []
+    const lookup = entryMap(entries)
+    return dialog.ids.map((id) => lookup.get(id)).filter(Boolean)
+  }, [dialog, entries])
+
+  const stats = collection?.stats ?? { groups: 0, lists: 0, bookmarks: 0 }
+  const canMutate = collection?.capabilities?.mutate === true
+
+  const focusLater = useCallback((selectors) => {
+    setFocusRequest({ selectors, nonce: Date.now() + Math.random() })
+  }, [])
+
+  const applyPayload = useCallback((payload) => {
+    setCollection(payload)
+    setOrder((current) => pruneOrder(current, payload))
+    setActiveGroupId((current) =>
+      payload.groups.some((group) => group.id === current)
+        ? current
+        : payload.groups[0]?.id ?? null,
+    )
+  }, [])
+
+  const resetInteraction = useCallback(() => {
+    setSelectionMode(false)
+    setSelected(new Set())
+    setConfirmingId(null)
+    setDialog(null)
+    setDialogError('')
+    setSummaryOpen(false)
+  }, [])
+
+  const handleMutationError = useCallback(
+    (error) => {
+      if (error?.code === 'stale-library' && error.library) {
+        applyPayload(error.library)
+        resetInteraction()
+        setToast(t('stale'))
+        focusLater(['[data-group-title="true"]', '.ar-group[data-active="true"]'])
+        return true
+      }
+      if (error?.code === 'library-readonly') {
+        setDialogError(t('readonly'))
+        setToast(t('readonly'))
+        return true
+      }
+      return false
+    },
+    [applyPayload, resetInteraction, focusLater, t],
+  )
+
+  const findBookmarkList = useCallback(
+    (bookmarkId) => {
+      for (const group of sourceGroups) {
+        for (const list of group.lists) {
+          if (list.bookmarks.some((bookmark) => bookmark.id === bookmarkId)) {
+            return { group, list }
+          }
+        }
+      }
+      return null
+    },
+    [sourceGroups],
   )
 
   const openBookmark = useCallback(
@@ -185,37 +309,293 @@ function Panel(props) {
     [t],
   )
 
-  const toggleList = useCallback((listId) => {
-    setExpanded((current) => {
-      const open = current[listId] !== false
-      return { ...current, [listId]: !open }
-    })
-  }, [])
+  const deleteOne = useCallback(
+    async (bookmarkId) => {
+      if (busy || collection === null || !canMutate) return
+      const found = findBookmarkList(bookmarkId)
+      let nextId = null
+      if (found !== null) {
+        const ordered = orderListBookmarks(found.list, order)
+        const index = ordered.bookmarks.findIndex((bookmark) => bookmark.id === bookmarkId)
+        const neighbour =
+          index === -1 ? null : ordered.bookmarks[index + 1] ?? ordered.bookmarks[index - 1] ?? null
+        nextId = neighbour === null ? null : neighbour.id
+      }
+      const listId = found === null ? null : found.list.id
+      const listOpen = listId !== null && (queryText !== '' || expanded[listId] !== false)
 
-  const expandAll = useCallback(() => setExpanded({}), [])
+      setBusy(true)
+      try {
+        const payload = await requestMutation(
+          { type: 'delete', ids: [bookmarkId] },
+          collection.revision,
+        )
+        applyPayload(payload)
+        setConfirmingId(null)
+        setToast(t('delete.done.one'))
+        const selectors = []
+        if (listOpen && nextId !== null) selectors.push('[data-focus-id="' + nextId + '"]')
+        if (listId !== null) selectors.push('[data-list-head="' + listId + '"]')
+        selectors.push('[data-group-title="true"]')
+        focusLater(selectors)
+      } catch (error) {
+        if (handleMutationError(error)) return
+        setToast(t('delete.failed'))
+      } finally {
+        setBusy(false)
+      }
+    },
+    [
+      busy,
+      collection,
+      canMutate,
+      findBookmarkList,
+      order,
+      queryText,
+      expanded,
+      applyPayload,
+      focusLater,
+      handleMutationError,
+      t,
+    ],
+  )
+
+  const confirmDeleteCard = useCallback(() => {
+    if (confirmingId === null) return
+    void deleteOne(confirmingId)
+  }, [confirmingId, deleteOne])
+
+  const cancelDeleteCard = useCallback(() => {
+    if (busy) return
+    setConfirmingId(null)
+  }, [busy])
+
+  const requestDeleteCard = useCallback(
+    (bookmarkId) => {
+      if (busy || !canMutate) return
+      setConfirmingId(bookmarkId)
+      setSummaryOpen(false)
+    },
+    [busy, canMutate],
+  )
+
+  const confirmBatchDelete = useCallback(async () => {
+    if (dialog === null || dialog.type !== 'delete' || busy || collection === null || !canMutate) return
+    const ids = dialog.ids
+    setBusy(true)
+    setDialogError('')
+    try {
+      const payload = await requestMutation({ type: 'delete', ids }, collection.revision)
+      applyPayload(payload)
+      resetInteraction()
+      setToast(
+        ids.length === 1 ? t('delete.done.one') : t('delete.done.many', { n: ids.length }),
+      )
+      focusLater(['[data-group-title="true"]', '.ar-group[data-active="true"]'])
+    } catch (error) {
+      if (handleMutationError(error)) return
+      setDialogError(t('delete.failed'))
+    } finally {
+      setBusy(false)
+    }
+  }, [
+    dialog,
+    busy,
+    collection,
+    canMutate,
+    applyPayload,
+    resetInteraction,
+    focusLater,
+    handleMutationError,
+    t,
+  ])
+
+  const confirmMove = useCallback(
+    async (target) => {
+      if (dialog === null || dialog.type !== 'move' || busy || collection === null || !canMutate) return
+      const targetGroup = collection.groups.find((group) => group.id === target.groupId)
+      const targetList =
+        targetGroup === undefined
+          ? undefined
+          : targetGroup.lists.find((list) => list.id === target.listId)
+      if (targetGroup === undefined || targetList === undefined) {
+        setDialogError(t('move.failed'))
+        return
+      }
+
+      const ids = dialog.ids
+      const moving = targetStats(entries, target.listId).moving
+      setBusy(true)
+      setDialogError('')
+      try {
+        const payload = await requestMutation(
+          {
+            type: 'move',
+            ids,
+            target: { groupId: target.groupId, listId: target.listId },
+          },
+          collection.revision,
+        )
+        applyPayload(payload)
+        resetInteraction()
+        setToast(
+          t('move.done', {
+            n: moving,
+            group: targetGroup.name,
+            list: targetList.title,
+          }),
+        )
+
+        if (target.groupId === activeGroupId) {
+          setExpanded((current) => ({ ...current, [target.listId]: true }))
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const section = document.querySelector(
+                '[data-section-id="' + target.listId + '"]',
+              )
+              if (section !== null && typeof section.scrollIntoView === 'function') {
+                section.scrollIntoView({ block: 'nearest' })
+              }
+            })
+          })
+          focusLater([
+            '[data-list-head="' + target.listId + '"]',
+            '[data-group-title="true"]',
+          ])
+        } else {
+          focusLater(['[data-group-title="true"]', '.ar-group[data-active="true"]'])
+        }
+      } catch (error) {
+        if (handleMutationError(error)) return
+        setDialogError(t('move.failed'))
+      } finally {
+        setBusy(false)
+      }
+    },
+    [
+      dialog,
+      busy,
+      collection,
+      canMutate,
+      entries,
+      activeGroupId,
+      applyPayload,
+      resetInteraction,
+      focusLater,
+      handleMutationError,
+      t,
+    ],
+  )
+
+  const openBatchDelete = useCallback(() => {
+    if (busy || entries.length === 0 || !canMutate) return
+    dialogTriggerRef.current = deleteButtonRef.current
+    setDialog({ type: 'delete', ids: entries.map((entry) => entry.bookmark.id) })
+    setDialogError('')
+  }, [busy, entries, canMutate])
+
+  const openMove = useCallback(() => {
+    if (busy || entries.length === 0 || !canMutate) return
+    dialogTriggerRef.current = moveButtonRef.current
+    setDialog({ type: 'move', ids: entries.map((entry) => entry.bookmark.id) })
+    setDialogError('')
+  }, [busy, entries, canMutate])
+
+  const closeDialog = useCallback(() => {
+    if (busy) return
+    const trigger = dialogTriggerRef.current
+    setDialog(null)
+    setDialogError('')
+    if (trigger !== null && trigger.isConnected) {
+      requestAnimationFrame(() => trigger.focus())
+    }
+  }, [busy])
+
+  const enterSelection = useCallback(() => {
+    if (busy || !canMutate) return
+    setSelectionMode(true)
+    setSummaryOpen(false)
+  }, [busy, canMutate])
+
+  const exitSelection = useCallback(() => {
+    if (busy) return
+    setSelectionMode(false)
+    setSelected(new Set())
+    setSummaryOpen(false)
+    setConfirmingId(null)
+    focusLater(['.ar-main__select', '[data-group-title="true"]'])
+  }, [busy, focusLater])
+
+  const toggleSelect = useCallback(
+    (bookmarkId) => {
+      if (busy || !canMutate) return
+      const next = toggleId(selected, bookmarkId)
+      setSelected(next)
+      setSelectionMode(true)
+      setConfirmingId(null)
+      if (next.size === 0) setSummaryOpen(false)
+    },
+    [busy, selected, canMutate],
+  )
+
+  const selectGroup = useCallback(
+    (groupId) => {
+      if (busy) return
+      setActiveGroupId(groupId)
+      setConfirmingId(null)
+      setSummaryOpen(false)
+    },
+    [busy],
+  )
+
+  const changeQuery = useCallback(
+    (value) => {
+      if (busy) return
+      setQuery(value)
+      setConfirmingId(null)
+      setSummaryOpen(false)
+    },
+    [busy],
+  )
+
+  const toggleList = useCallback(
+    (listId) => {
+      if (busy) return
+      setExpanded((current) => {
+        const open = current[listId] !== false
+        return { ...current, [listId]: !open }
+      })
+      setConfirmingId(null)
+    },
+    [busy],
+  )
+
+  const expandAll = useCallback(() => {
+    if (busy) return
+    setExpanded({})
+  }, [busy])
+
   const collapseAll = useCallback(() => {
+    if (busy) return
     const next = {}
     for (const list of activeLists) next[list.id] = false
     setExpanded(next)
-  }, [activeLists])
-
-  /** The one header button collapses only when every list is already open. */
-  const allListsOpen =
-    activeGroup !== null && activeLists.every((list) => expanded[list.id] !== false)
+  }, [busy, activeLists])
 
   const reorderGroups = useCallback(
     (from, to) => {
+      if (busy) return
       setOrder((current) => {
         const next = moveId(groupIds, from, to)
         return next === groupIds ? current : { ...current, groups: next }
       })
     },
-    [groupIds],
+    [busy, groupIds],
   )
 
   const reorderLists = useCallback(
     (from, to) => {
-      if (activeGroup === null) return
+      if (busy || activeGroup === null) return
       setOrder((current) => {
         const next = moveId(visibleListIds, from, to)
         const key = activeGroup.id
@@ -224,20 +604,78 @@ function Panel(props) {
           : { ...current, lists: { ...current.lists, [key]: next } }
       })
     },
-    [activeGroup, visibleListIds],
+    [busy, activeGroup, visibleListIds],
   )
 
-  const reorderBookmarks = useCallback((listId, ids, from, to) => {
-    setOrder((current) => {
-      const next = moveId(ids, from, to)
-      return next === ids
-        ? current
-        : { ...current, bookmarks: { ...current.bookmarks, [listId]: next } }
+  const reorderBookmarks = useCallback(
+    (listId, ids, from, to) => {
+      if (busy) return
+      setOrder((current) => {
+        const next = moveId(ids, from, to)
+        return next === ids
+          ? current
+          : { ...current, bookmarks: { ...current.bookmarks, [listId]: next } }
+      })
+    },
+    [busy],
+  )
+
+  const toggleSummary = useCallback(() => {
+    if (busy || entries.length === 0) return
+    setSummaryOpen((current) => !current)
+  }, [busy, entries.length])
+
+  const closeSummary = useCallback(() => {
+    setSummaryOpen(false)
+    requestAnimationFrame(() => {
+      if (countButtonRef.current !== null && countButtonRef.current.disabled !== true) {
+        countButtonRef.current.focus()
+      } else if (cancelButtonRef.current !== null) {
+        cancelButtonRef.current.focus()
+      }
     })
   }, [])
 
-  const stats = collection?.stats ?? { groups: 0, lists: 0, bookmarks: 0 }
-  const header = h(PageHeader, { t, query, onQueryChange: setQuery })
+  const removeFromSummary = useCallback(
+    (bookmarkId) => {
+      const next = new Set(selected)
+      next.delete(bookmarkId)
+      setSelected(next)
+      if (next.size === 0) setSummaryOpen(false)
+    },
+    [selected],
+  )
+
+  const clearSelection = useCallback(() => {
+    setSelected(new Set())
+    setSummaryOpen(false)
+  }, [])
+
+  const jumpToGroup = useCallback((groupId) => {
+    setActiveGroupId(groupId)
+    setSummaryOpen(false)
+    setConfirmingId(null)
+  }, [])
+
+  /* Esc leaves selection mode; the summary, a dialog, or a card confirm owns
+     the key first when one of them is open. */
+  useEffect(() => {
+    if (!selectionMode) return undefined
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return
+      if (dialog !== null || confirmingId !== null || summaryOpen) return
+      event.preventDefault()
+      exitSelection()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [selectionMode, dialog, confirmingId, summaryOpen, exitSelection])
+
+  const header = h(PageHeader, { t, query, onQueryChange: changeQuery, busy })
+  const allListsOpen =
+    activeGroup !== null &&
+    activeLists.length > 0 &&
+    activeLists.every((list) => expanded[list.id] !== false)
 
   /**
    * Which way the right column should slide when the group changes: the new
@@ -294,20 +732,61 @@ function Panel(props) {
     )
   }
 
+  if (collection !== null && groups.length === 0) {
+    return h(
+      'div',
+      { className: 'ar-root' },
+      h('style', { key: 'styles' }, CSS),
+      header,
+      h(
+        'div',
+        { className: 'ar-state' },
+        h('div', { className: 'ar-state__title' }, t('empty.library')),
+        h('div', { className: 'ar-state__hint' }, t('empty.hint')),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ar-btn',
+            style: { borderColor: 'var(--dsw-alias-border-l2)' },
+            onClick: () => setAttempt((value) => value + 1),
+          },
+          t('reload'),
+        ),
+      ),
+    )
+  }
+
   const side = h(GroupRail, {
     t,
     stats,
     groups,
     groupIds,
     groupMatches,
+    selectedByGroup,
     activeGroupId: activeGroup === null ? null : activeGroup.id,
-    onSelect: setActiveGroupId,
+    selectionMode,
+    busy,
+    dragDisabled: confirmingId !== null || dialog !== null,
+    onSelect: selectGroup,
     onReorder: reorderGroups,
   })
 
   const mainChildren = []
 
   if (activeGroup !== null) {
+    const showExpand = queryText === '' && activeLists.length > 0
+    const showSelect = canMutate && (selectionMode || visibleCardCount > 0)
+    const meta =
+      queryText === ''
+        ? [
+            t('count.lists', { n: activeLists.length }),
+            t('count.bookmarks', { n: activeGroup.count }),
+          ].join(' · ')
+        : t('count.match', {
+            n: visibleLists.reduce((total, list) => total + list.count, 0),
+          })
+
     mainChildren.push(
       h(
         'div',
@@ -315,39 +794,53 @@ function Panel(props) {
         h(
           'div',
           { className: 'ar-main__titles' },
-          h('h2', { className: 'ar-main__title', title: activeGroup.name }, activeGroup.name),
           h(
-            'div',
-            { className: 'ar-main__meta' },
-            queryText === ''
-              ? [
-                  t('count.lists', { n: activeLists.length }),
-                  t('count.bookmarks', { n: activeGroup.count }),
-                ].join(' · ')
-              : t('count.match', {
-                  n: visibleLists.reduce((total, list) => total + list.count, 0),
-                }),
+            'h2',
+            {
+              className: 'ar-main__title',
+              title: activeGroup.name,
+              'data-group-title': 'true',
+              tabIndex: -1,
+            },
+            activeGroup.name,
           ),
+          h('div', { className: 'ar-main__meta' }, meta),
         ),
-        queryText === ''
+        showExpand || showSelect
           ? h(
               'div',
               { className: 'ar-main__actions' },
-              h(
-                'button',
-                {
-                  type: 'button',
-                  className: 'ar-btn',
-                  onClick: allListsOpen ? collapseAll : expandAll,
-                },
-                allListsOpen ? t('collapseAll') : t('expandAll'),
-              ),
+              showExpand
+                ? h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'ar-btn ar-main__expand',
+                      disabled: busy,
+                      onClick: allListsOpen ? collapseAll : expandAll,
+                    },
+                    allListsOpen ? t('collapseAll') : t('expandAll'),
+                  )
+                : null,
+              showSelect
+                ? h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'ar-btn ar-main__select',
+                      'data-active': selectionMode ? 'true' : undefined,
+                      disabled: busy,
+                      onClick: selectionMode ? exitSelection : enterSelection,
+                    },
+                    selectionMode ? t('select.exit') : t('select'),
+                  )
+                : null,
             )
           : null,
       ),
     )
 
-    if (visibleLists.length === 0) {
+    if (queryText !== '' && visibleLists.length === 0) {
       mainChildren.push(
         h(
           'div',
@@ -355,8 +848,16 @@ function Panel(props) {
           h(
             'div',
             { className: 'ar-state__title' },
-            queryText === '' ? t('status.empty') : t('status.noMatch', { q: query.trim() }),
+            t('status.noMatch', { q: query.trim() }),
           ),
+        ),
+      )
+    } else if (queryText === '' && activeLists.length === 0) {
+      mainChildren.push(
+        h(
+          'div',
+          { className: 'ar-state', key: 'empty-group' },
+          h('div', { className: 'ar-state__title' }, t('empty.group')),
         ),
       )
     } else {
@@ -368,19 +869,35 @@ function Panel(props) {
             key: 'sections',
             ids: visibleListIds,
             axis: 'y',
-            disabled: queryText !== '' || visibleListIds.length < 2,
+            disabled:
+              queryText !== '' ||
+              visibleListIds.length < 2 ||
+              busy ||
+              selectionMode ||
+              confirmingId !== null,
             onReorder: reorderLists,
           },
           visibleLists.map((list) => {
             const open = queryText === '' ? expanded[list.id] !== false : true
             return h(ListSection, {
               key: list.id,
+              t,
               list,
               open,
               collapsible: queryText === '',
               sortable: queryText === '',
+              selectionMode,
+              selected,
+              busy,
+              canMutate,
+              confirmingId,
+              deleteBusy: busy,
               onToggle: () => toggleList(list.id),
               onOpen: openBookmark,
+              onToggleSelect: toggleSelect,
+              onRequestDelete: requestDeleteCard,
+              onCancelDelete: cancelDeleteCard,
+              onConfirmDelete: confirmDeleteCard,
               onReorderBookmarks: reorderBookmarks,
             })
           }),
@@ -404,12 +921,122 @@ function Panel(props) {
     ),
   )
 
+  let countText = t('select.count', { n: entries.length })
+  if (selectedGroupCount > 1) {
+    countText += ' · ' + t('select.groups', { m: selectedGroupCount })
+  }
+  if (queryText !== '' && hiddenSelected > 0) {
+    countText += ' · ' + t('select.hidden', { k: hiddenSelected })
+  }
+
+  const dock = selectionMode && canMutate
+    ? h(
+        'div',
+        { className: 'ar-bar-dock', key: 'bar' },
+        selectionSummaryOpen
+          ? h(SelectionSummary, {
+              t,
+              entries,
+              onRemove: removeFromSummary,
+              onClear: clearSelection,
+              onJump: jumpToGroup,
+              onClose: closeSummary,
+            })
+          : null,
+        h(
+          'div',
+          { className: 'ar-bar', role: 'toolbar', 'aria-label': t('select.bar') },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'ar-bar__count',
+              ref: countButtonRef,
+              'aria-expanded': selectionSummaryOpen ? 'true' : 'false',
+              'aria-live': 'polite',
+              title: entries.length === 0 ? t('select.emptyHint') : countText,
+              disabled: entries.length === 0 || busy,
+              onClick: toggleSummary,
+            },
+            countText,
+          ),
+          h(
+            'div',
+            { className: 'ar-bar__actions' },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'ar-bar__btn',
+                ref: moveButtonRef,
+                disabled: entries.length === 0 || busy,
+                onClick: openMove,
+              },
+              t('action.move'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'ar-bar__btn ar-bar__btn--danger',
+                ref: deleteButtonRef,
+                disabled: entries.length === 0 || busy,
+                onClick: openBatchDelete,
+              },
+              t('action.delete'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'ar-bar__btn ar-bar__btn--ghost',
+                ref: cancelButtonRef,
+                disabled: busy,
+                onClick: exitSelection,
+              },
+              t('cancel'),
+            ),
+          ),
+        ),
+      )
+    : null
+
+  let dialogNode = null
+  if (dialog !== null && dialog.type === 'delete') {
+    dialogNode = h(BatchDeleteDialog, {
+      t,
+      entries: dialogEntries,
+      busy,
+      error: dialogError,
+      onCancel: closeDialog,
+      onConfirm: confirmBatchDelete,
+    })
+  } else if (dialog !== null && dialog.type === 'move') {
+    dialogNode = h(MoveDialog, {
+      t,
+      groups,
+      activeGroupId: activeGroup === null ? null : activeGroup.id,
+      entries: dialogEntries,
+      busy,
+      error: dialogError,
+      onCancel: closeDialog,
+      onConfirm: confirmMove,
+    })
+  }
+
   return h(
     'div',
-    { className: 'ar-root' },
+    {
+      className: 'ar-root',
+      'data-select-mode': selectionMode ? 'true' : 'false',
+      'data-dialog-open': dialog !== null ? 'true' : 'false',
+      'data-busy': busy ? 'true' : 'false',
+    },
     h('style', { key: 'styles' }, CSS),
     header,
     h('div', { className: 'ar-body' }, side, main),
+    dock,
+    dialogNode,
     toast === null ? null : h('div', { className: 'ar-toast', role: 'status' }, toast),
   )
 }

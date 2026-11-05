@@ -10,8 +10,13 @@ window.__ModuleLoader__.load({
   factory(require) {
     var __modules = {
 "./api.js": function (module, exports, require) {
-/** The two Host calls the panel makes. Both fail by throwing. */
-const { LIBRARY_URL, OPEN_URL } = require('./constants.js')
+/** The three Host calls the panel makes. All fail by throwing. */
+const { LIBRARY_URL, MUTATE_URL, OPEN_URL } = require('./constants.js')
+
+function asLibrary(payload) {
+  if (!Array.isArray(payload?.groups)) throw new Error('invalid-library')
+  return payload
+}
 
 async function fetchLibrary(signal) {
   const response = await fetch(LIBRARY_URL, {
@@ -19,11 +24,7 @@ async function fetchLibrary(signal) {
     headers: { accept: 'application/json' },
   })
   if (!response.ok) throw new Error('HTTP ' + response.status)
-  const payload = await response.json()
-  if (!Array.isArray(payload?.groups) || payload.groups.length === 0) {
-    throw new Error('empty-collection')
-  }
-  return payload
+  return asLibrary(await response.json())
 }
 
 async function openBookmark(url) {
@@ -35,14 +36,45 @@ async function openBookmark(url) {
   if (!response.ok) throw new Error('HTTP ' + response.status)
 }
 
-module.exports = { fetchLibrary, openBookmark }
+/**
+ * One delete / move operation. On a 409 stale conflict the Host returns the
+ * latest library alongside the error, so the caller can refresh in place.
+ */
+async function mutateLibrary(op, revision) {
+  const response = await fetch(MUTATE_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify({ revision, op }),
+  })
+
+  let payload = null
+  try {
+    payload = await response.json()
+  } catch {
+    payload = null
+  }
+
+  if (!response.ok) {
+    const code = typeof payload?.error === 'string' ? payload.error : 'mutation-failed'
+    const error = new Error(code)
+    error.code = code
+    if (code === 'stale-library' && Array.isArray(payload?.groups)) {
+      error.library = payload
+    }
+    throw error
+  }
+
+  return asLibrary(payload)
+}
+
+module.exports = { fetchLibrary, openBookmark, mutateLibrary }
       },
 "./bookmarks.js": function (module, exports, require) {
 /** Presentational pieces of the library: group rows, list sections, cards. */
 const React = require('react')
 const h = React.createElement
-const { useState } = React
-const { Chevron } = require('./glyphs.js')
+const { useState, useEffect, useRef } = React
+const { Chevron, CheckGlyph, TrashGlyph } = require('./glyphs.js')
 const { Sortable } = require('./sortable.js')
 
 /** The single letter a favicon-less bookmark shows in its 18px tile. */
@@ -86,30 +118,208 @@ function Favicon({ bookmark }) {
 }
 
 /**
- * One bookmark. It stays a real anchor so hover shows the destination and
- * the context menu can copy it; a plain left click is intercepted and sent
- * to the Host, which hands the URL to the system browser. Modified clicks
- * keep the browser's own new-tab behavior.
+ * One bookmark. The anchor is a transparent layer over the whole card, so the
+ * native link behavior (context menu, modified click, hover URL) is kept while
+ * the checkbox and trash can be real buttons beside it, not inside it.
  */
-function BookmarkCard({ bookmark, onOpen }) {
+function BookmarkCard({
+  t,
+  bookmark,
+  selected,
+  selectionMode,
+  busy,
+  canMutate,
+  confirming,
+  deleteBusy,
+  onOpen,
+  onToggle,
+  onRequestDelete,
+  onCancelDelete,
+  onConfirmDelete,
+}) {
+  const cardRef = useRef(null)
+  const trashRef = useRef(null)
+  const cancelRef = useRef(null)
+  const confirmRef = useRef(null)
+  const wasConfirming = useRef(false)
+
+  useEffect(() => {
+    if (wasConfirming.current && !confirming && trashRef.current !== null) {
+      const frame = requestAnimationFrame(() => {
+        if (trashRef.current !== null) trashRef.current.focus()
+      })
+      wasConfirming.current = confirming
+      return () => cancelAnimationFrame(frame)
+    }
+    wasConfirming.current = confirming
+    return undefined
+  }, [confirming])
+
+  useEffect(() => {
+    if (confirming && cancelRef.current !== null) cancelRef.current.focus()
+  }, [confirming])
+
+  useEffect(() => {
+    if (!confirming) return undefined
+    const onPointerDown = (event) => {
+      if (deleteBusy) return
+      if (cardRef.current !== null && !cardRef.current.contains(event.target)) {
+        onCancelDelete()
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [confirming, deleteBusy, onCancelDelete])
+
+  useEffect(() => {
+    if (!confirming) return undefined
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      if (!deleteBusy) onCancelDelete()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [confirming, deleteBusy, onCancelDelete])
+
+  const onConfirmKeyDown = (event) => {
+    if (event.key !== 'Tab') return
+    const cancel = cancelRef.current
+    const confirm = confirmRef.current
+    if (cancel === null || confirm === null) return
+    if (event.shiftKey && document.activeElement === cancel) {
+      event.preventDefault()
+      confirm.focus()
+    } else if (!event.shiftKey && document.activeElement === confirm) {
+      event.preventDefault()
+      cancel.focus()
+    }
+  }
+
+  const confirmLabelId = 'ar-confirm-' + bookmark.id
+
   return h(
-    'a',
+    'div',
     {
       className: 'ar-card',
+      ref: cardRef,
+      'data-sort-id': bookmark.id,
+      'data-selected': selected ? 'true' : 'false',
+      'data-selecting': selectionMode ? 'true' : 'false',
+      'data-confirming': confirming ? 'true' : 'false',
+    },
+    h('a', {
+      className: 'ar-card__link',
       href: bookmark.url,
       target: '_blank',
       rel: 'noreferrer',
       title: bookmark.title + '\n' + bookmark.url,
+      'aria-label': bookmark.title,
+      'data-focus-id': bookmark.id,
       draggable: false,
-      'data-sort-id': bookmark.id,
+      tabIndex: selectionMode || confirming ? -1 : undefined,
       onClick: (event) => {
+        if (selectionMode) {
+          event.preventDefault()
+          onToggle(bookmark.id)
+          return
+        }
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
         event.preventDefault()
         onOpen(bookmark.url)
       },
-    },
-    h(Favicon, { bookmark }),
-    h('span', { className: 'ar-card__title' }, bookmark.title),
+    }),
+    h(
+      'span',
+      { className: 'ar-card__lead' },
+      h(Favicon, { bookmark }),
+      canMutate === true ? h(
+        'button',
+        {
+          type: 'button',
+          className: 'ar-card__check',
+          role: 'checkbox',
+          'aria-checked': selected ? 'true' : 'false',
+          'aria-label': t('select.cardAria', { title: bookmark.title }),
+          'aria-hidden': selectionMode ? undefined : 'true',
+          'data-checked': selected ? 'true' : 'false',
+          'data-no-drag': '1',
+          tabIndex: selectionMode && !confirming ? 0 : -1,
+          disabled: busy === true,
+          onClick: (event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onToggle(bookmark.id)
+          },
+        },
+        selected ? h(CheckGlyph, { size: 11 }) : null,
+      ) : null,
+    ),
+    h('span', { className: 'ar-card__title', 'aria-hidden': 'true' }, bookmark.title),
+    canMutate === true && !selectionMode && !confirming
+      ? h(
+          'button',
+          {
+            type: 'button',
+            className: 'ar-card__trash',
+            ref: trashRef,
+            'aria-label': t('delete.cardAria', { title: bookmark.title }),
+            title: t('delete.cardAria', { title: bookmark.title }),
+            'data-no-drag': '1',
+            disabled: busy === true,
+            onClick: (event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              onRequestDelete(bookmark.id)
+            },
+          },
+          h(TrashGlyph, { size: 14 }),
+        )
+      : null,
+    confirming
+      ? h(
+          'div',
+          {
+            className: 'ar-card__confirm',
+            role: 'dialog',
+            'aria-labelledby': confirmLabelId,
+            'data-no-drag': '1',
+            onClick: (event) => event.stopPropagation(),
+            onKeyDown: onConfirmKeyDown,
+          },
+          h('span', { className: 'ar-card__confirm-text', id: confirmLabelId }, t('delete.cardTitle')),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'ar-card__confirm-btn',
+              ref: cancelRef,
+              disabled: deleteBusy === true,
+              onClick: (event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                onCancelDelete()
+              },
+            },
+            t('cancel'),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'ar-card__confirm-btn ar-card__confirm-btn--danger',
+              ref: confirmRef,
+              disabled: deleteBusy === true,
+              onClick: (event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                onConfirmDelete()
+              },
+            },
+            deleteBusy === true ? t('delete.busy') : t('delete.cardConfirm'),
+          ),
+        )
+      : null,
   )
 }
 
@@ -118,13 +328,35 @@ function BookmarkCard({ bookmark, onOpen }) {
  * colour comes from the surrounding view's `data-tone`, so every list of a
  * group shares that group's hue at a softer saturation.
  */
-function ListSection({ list, open, collapsible, sortable, onToggle, onOpen, onReorderBookmarks }) {
+function ListSection({
+  t,
+  list,
+  open,
+  collapsible,
+  sortable,
+  selectionMode,
+  selected,
+  busy,
+  canMutate,
+  confirmingId,
+  deleteBusy,
+  onToggle,
+  onOpen,
+  onToggleSelect,
+  onRequestDelete,
+  onCancelDelete,
+  onConfirmDelete,
+  onReorderBookmarks,
+}) {
   const inner = [
     h(Chevron, { key: 'chev', open }),
     h('span', { key: 'title', className: 'ar-sec__title' }, list.title),
     h('span', { key: 'count', className: 'ar-sec__count' }, list.count),
   ]
-  const sortAttrs = { 'data-sort-id': list.id }
+  const sortAttrs = {
+    'data-sort-id': list.id,
+    'data-list-head': list.id,
+  }
   const head = collapsible
     ? h(
         'button',
@@ -132,20 +364,28 @@ function ListSection({ list, open, collapsible, sortable, onToggle, onOpen, onRe
           type: 'button',
           className: 'ar-sec__head',
           'aria-expanded': open ? 'true' : 'false',
+          disabled: busy === true,
           ...sortAttrs,
           onClick: onToggle,
         },
         inner,
       )
-    : h('div', { className: 'ar-sec__head', 'data-static': 'true', ...sortAttrs }, inner)
+    : h(
+        'div',
+        { className: 'ar-sec__head', 'data-static': 'true', tabIndex: -1, ...sortAttrs },
+        inner,
+      )
 
   const bookmarkIds = list.bookmarks.map((bookmark) => bookmark.id)
+  const gridDisabled =
+    !sortable || selectionMode === true || busy === true || bookmarkIds.length < 2
 
   return h(
     'section',
     {
       className: 'ar-sec',
       'data-open': open ? 'true' : 'false',
+      'data-section-id': list.id,
       'aria-label': list.title,
     },
     head,
@@ -155,25 +395,53 @@ function ListSection({ list, open, collapsible, sortable, onToggle, onOpen, onRe
       h(
         'div',
         { className: 'ar-sec__inner' },
-        h(
-          Sortable,
-          {
-            className: 'ar-grid',
-            ids: bookmarkIds,
-            axis: 'grid',
-            disabled: !sortable || bookmarkIds.length < 2,
-            onReorder: (from, to) => onReorderBookmarks(list.id, bookmarkIds, from, to),
-          },
-          list.bookmarks.map((bookmark) =>
-            h(BookmarkCard, { key: bookmark.id, bookmark, onOpen }),
-          ),
-        ),
+        list.bookmarks.length === 0
+          ? h('div', { className: 'ar-sec__empty' }, t('empty.list'))
+          : h(
+              Sortable,
+              {
+                className: 'ar-grid',
+                ids: bookmarkIds,
+                axis: 'grid',
+                disabled: gridDisabled,
+                onReorder: (from, to) =>
+                  onReorderBookmarks(list.id, bookmarkIds, from, to),
+              },
+              list.bookmarks.map((bookmark) =>
+                h(BookmarkCard, {
+                  key: bookmark.id,
+                  t,
+                  bookmark,
+                  selected: selected.has(bookmark.id),
+                  selectionMode,
+                  busy,
+                  canMutate,
+                  confirming: confirmingId === bookmark.id,
+                  deleteBusy,
+                  onOpen,
+                  onToggle: onToggleSelect,
+                  onRequestDelete,
+                  onCancelDelete,
+                  onConfirmDelete,
+                }),
+              ),
+            ),
       ),
     ),
   )
 }
 
-function GroupRow({ group, tone, count, active, dim, onClick }) {
+function GroupRow({
+  t,
+  group,
+  tone,
+  count,
+  selectedCount,
+  active,
+  dim,
+  disabled,
+  onClick,
+}) {
   return h(
     'button',
     {
@@ -185,9 +453,21 @@ function GroupRow({ group, tone, count, active, dim, onClick }) {
       'data-sort-id': group.id,
       'aria-current': active ? 'true' : undefined,
       title: group.name,
+      disabled: disabled === true,
       onClick,
     },
     h('span', { className: 'ar-group__name' }, group.name),
+    selectedCount > 0
+      ? h(
+          'span',
+          {
+            className: 'ar-group__sel',
+            title: t('select.badge', { n: selectedCount }),
+            'aria-label': t('select.badge', { n: selectedCount }),
+          },
+          selectedCount,
+        )
+      : null,
     h('span', { className: 'ar-group__count' }, count),
   )
 }
@@ -203,15 +483,16 @@ const PANEL_ID = 'archive'
 
 const LIBRARY_URL = '/dsh-archive/bookmarks'
 const OPEN_URL = '/dsh-archive/open'
+const MUTATE_URL = '/dsh-archive/mutate'
 
 /** Selected group + collapsed lists. Keyed by the Host-provided ids. */
-const STATE_KEY = 'dsh-archive:state:v1'
+const STATE_KEY = 'dsh-archive:state:v2'
 
 /**
- * Manual order per level. v2 stores `bookmarks` (the data model's name) rather
- * than the old render-only `cards`.
+ * Manual order per level. v3 belongs to the content-derived ids; the old
+ * positional `v2` order is intentionally not migrated.
  */
-const ORDER_KEY = 'dsh-archive:order:v2'
+const ORDER_KEY = 'dsh-archive:order:v3'
 
 /** Touch only: a short hold separates a drag from a scroll gesture. */
 const HOLD_MS = 280
@@ -230,6 +511,7 @@ module.exports = {
   PANEL_ID,
   LIBRARY_URL,
   OPEN_URL,
+  MUTATE_URL,
   STATE_KEY,
   ORDER_KEY,
   HOLD_MS,
@@ -237,6 +519,418 @@ module.exports = {
   TOUCH_SCROLL_TOLERANCE,
   TONE_COUNT,
 }
+      },
+"./dialogs.js": function (module, exports, require) {
+/**
+ * The three floating pieces of the bulk flow: a focus-trapped modal shell, the
+ * batch-delete confirmation, the two-dropdown move picker, and the selection
+ * summary that makes cross-group selections inspectable.
+ */
+const React = require('react')
+const h = React.createElement
+const { useEffect, useRef, useState } = React
+const { CloseGlyph } = require('./glyphs.js')
+const { targetStats } = require('./selection.js')
+
+function focusablesIn(panel) {
+  if (panel === null) return []
+  return Array.from(
+    panel.querySelectorAll('button:not([disabled]), select:not([disabled]), input:not([disabled]), a[href]'),
+  ).filter((element) => element.offsetParent !== null)
+}
+
+/** A centered modal with a scrim, focus trap, Escape, and outside-click. */
+function Modal({ title, children, footer, onCancel, busy, initialFocusRef, width }) {
+  const panelRef = useRef(null)
+
+  useEffect(() => {
+    const preferred =
+      (initialFocusRef !== undefined && initialFocusRef.current !== null
+        ? initialFocusRef.current
+        : null) ?? focusablesIn(panelRef.current)[0]
+    if (preferred !== null && typeof preferred.focus === 'function') preferred.focus()
+  }, [initialFocusRef])
+
+  const onKeyDown = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      if (busy !== true) onCancel()
+      return
+    }
+    if (event.key !== 'Tab') return
+    const nodes = focusablesIn(panelRef.current)
+    if (nodes.length === 0) return
+    const first = nodes[0]
+    const last = nodes[nodes.length - 1]
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
+
+  return h(
+    'div',
+    {
+      className: 'ar-modal',
+      onKeyDown,
+      onMouseDown: (event) => {
+        if (event.target === event.currentTarget && busy !== true) onCancel()
+      },
+    },
+    h(
+      'div',
+      {
+        className: 'ar-modal__panel',
+        role: 'dialog',
+        'aria-modal': 'true',
+        'aria-label': title,
+        ref: panelRef,
+        style: width === undefined ? undefined : { width },
+      },
+      h('div', { className: 'ar-modal__title' }, title),
+      h('div', { className: 'ar-modal__body' }, children),
+      footer === undefined ? null : h('div', { className: 'ar-modal__footer' }, footer),
+    ),
+  )
+}
+
+/** Delete N selected bookmarks, after one explicit confirmation. */
+function BatchDeleteDialog({ t, entries, busy, error, onCancel, onConfirm }) {
+  const cancelRef = useRef(null)
+  const title = t('delete.batchTitle', { n: entries.length })
+  const visible = entries.slice(0, 4)
+  const remaining = entries.length - visible.length
+
+  return h(
+    Modal,
+    {
+      title,
+      onCancel,
+      busy,
+      initialFocusRef: cancelRef,
+      footer: h(
+        'div',
+        { className: 'ar-modal__actions' },
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ar-btn',
+            ref: cancelRef,
+            disabled: busy === true,
+            onClick: onCancel,
+          },
+          t('cancel'),
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ar-btn ar-btn--danger',
+            disabled: busy === true,
+            onClick: onConfirm,
+          },
+          busy === true ? t('delete.busy') : t('delete.batchConfirm'),
+        ),
+      ),
+    },
+    h('div', { className: 'ar-modal__note' }, t('delete.irreversible')),
+    h(
+      'ul',
+      { className: 'ar-pick-list' },
+      visible.map((entry) =>
+        h(
+          'li',
+          { key: entry.bookmark.id, className: 'ar-pick-list__row' },
+          h('span', { className: 'ar-pick-list__path' }, entry.group.name + ' / ' + entry.list.title),
+          h('span', { className: 'ar-pick-list__title', title: entry.bookmark.title }, entry.bookmark.title),
+        ),
+      ),
+      remaining > 0
+        ? h('li', { className: 'ar-pick-list__row ar-pick-list__more' }, t('delete.moreItems', { n: remaining }))
+        : null,
+    ),
+    error === '' || error === null || error === undefined
+      ? null
+      : h('div', { className: 'ar-modal__error', role: 'alert' }, error),
+  )
+}
+
+function groupOptionLabel(t, group, selected) {
+  const base = group.name + ' · ' + t('count.bookmarks', { n: group.count })
+  return selected > 0 ? base + ' ' + t('move.optionSelected', { k: selected }) : base
+}
+
+function listOptionLabel(t, list, selected) {
+  const base = list.title + ' · ' + t('count.bookmarks', { n: list.count })
+  return selected > 0 ? base + ' ' + t('move.optionSelected', { k: selected }) : base
+}
+
+/**
+ * Move the current selection into one existing list. Two native selects keep
+ * the flow small and accessible; empty lists are valid targets, empty groups
+ * (no lists) are not.
+ */
+function MoveDialog({ t, groups, activeGroupId, entries, busy, error, onCancel, onConfirm }) {
+  const initialGroup =
+    groups.some((group) => group.id === activeGroupId) && groups.length > 0
+      ? activeGroupId
+      : groups[0]?.id ?? ''
+  const [groupId, setGroupId] = useState(initialGroup)
+  const [listId, setListId] = useState('')
+  const groupSelectRef = useRef(null)
+
+  const group = groups.find((candidate) => candidate.id === groupId) ?? null
+  const list = group === null ? null : group.lists.find((candidate) => candidate.id === listId) ?? null
+
+  const stats = list === null ? { total: entries.length, inTarget: 0, moving: entries.length } : targetStats(entries, list.id)
+  const valid = list !== null && stats.moving > 0
+
+  const hint = []
+  if (list === null) {
+    hint.push(t('move.chooseList'))
+  } else if (stats.moving === 0) {
+    hint.push(t('move.same'))
+  } else {
+    hint.push(t('move.preview', { group: group.name, list: list.title }))
+    if (stats.inTarget > 0) hint.push(t('move.skip', { k: stats.inTarget }))
+    if (list.count === 0) hint.push(t('move.emptyTarget'))
+  }
+
+  return h(
+    Modal,
+    {
+      title: t('move.title', { n: entries.length }),
+      onCancel,
+      busy,
+      initialFocusRef: groupSelectRef,
+      footer: h(
+        'div',
+        { className: 'ar-modal__actions' },
+        h(
+          'button',
+          { type: 'button', className: 'ar-btn', disabled: busy === true, onClick: onCancel },
+          t('cancel'),
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ar-btn ar-btn--primary',
+            disabled: busy === true || !valid,
+            onClick: () => onConfirm({ groupId, listId }),
+          },
+          busy === true ? t('move.busy') : t('move.confirm'),
+        ),
+      ),
+    },
+    h(
+      'label',
+      { className: 'ar-form__field' },
+      h('span', { className: 'ar-form__label' }, t('move.group')),
+      h(
+        'select',
+        {
+          className: 'ar-form__select',
+          ref: groupSelectRef,
+          value: groupId,
+          disabled: busy === true || groups.length === 0,
+          onChange: (event) => {
+            setGroupId(event.target.value)
+            setListId('')
+          },
+        },
+        groups.length === 0
+          ? h('option', { value: '' }, t('move.chooseGroup'))
+          : groups.map((candidate) =>
+              h(
+                'option',
+                { key: candidate.id, value: candidate.id },
+                groupOptionLabel(
+                  t,
+                  candidate,
+                  entries.filter((entry) => entry.group.id === candidate.id).length,
+                ),
+              ),
+            ),
+      ),
+    ),
+    h(
+      'label',
+      { className: 'ar-form__field' },
+      h('span', { className: 'ar-form__label' }, t('move.list')),
+      h(
+        'select',
+        {
+          className: 'ar-form__select',
+          value: listId,
+          disabled: busy === true || group === null || group.lists.length === 0,
+          onChange: (event) => setListId(event.target.value),
+        },
+        h(
+          'option',
+          { value: '' },
+          group !== null && group.lists.length === 0 ? t('move.noLists') : t('move.chooseList'),
+        ),
+        group === null
+          ? null
+          : group.lists.map((candidate) =>
+              h(
+                'option',
+                { key: candidate.id, value: candidate.id },
+                listOptionLabel(
+                  t,
+                  candidate,
+                  entries.filter((entry) => entry.list.id === candidate.id).length,
+                ),
+              ),
+            ),
+      ),
+    ),
+    h(
+      'div',
+      { className: 'ar-modal__hint' },
+      hint.map((line, index) => h('div', { key: String(index) }, line)),
+    ),
+    error === '' || error === null || error === undefined
+      ? null
+      : h('div', { className: 'ar-modal__error', role: 'alert' }, error),
+  )
+}
+
+/**
+ * A non-modal popover that lists every selected bookmark, grouped by its
+ * library location. Needed because cross-group selections are not all visible
+ * in the current column at once.
+ */
+function SelectionSummary({ t, entries, onRemove, onClear, onJump, onClose }) {
+  const panelRef = useRef(null)
+
+  useEffect(() => {
+    if (panelRef.current !== null) panelRef.current.focus()
+  }, [])
+
+  useEffect(() => {
+    const onPointerDown = (event) => {
+      const target = event.target
+      if (panelRef.current !== null && panelRef.current.contains(target)) return
+      if (target instanceof Element && target.closest('.ar-bar__count') !== null) return
+      onClose()
+    }
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      onClose()
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [onClose])
+
+  const groups = []
+  for (const entry of entries) {
+    let group = groups.find((candidate) => candidate.id === entry.group.id)
+    if (group === undefined) {
+      group = { id: entry.group.id, name: entry.group.name, lists: [] }
+      groups.push(group)
+    }
+    let list = group.lists.find((candidate) => candidate.id === entry.list.id)
+    if (list === undefined) {
+      list = { id: entry.list.id, title: entry.list.title, items: [] }
+      group.lists.push(list)
+    }
+    list.items.push(entry)
+  }
+
+  return h(
+    'div',
+    {
+      className: 'ar-summary',
+      role: 'dialog',
+      'aria-label': t('select.summary'),
+      tabIndex: -1,
+      ref: panelRef,
+    },
+    h(
+      'div',
+      { className: 'ar-summary__head' },
+      h('span', { className: 'ar-summary__count' }, t('select.count', { n: entries.length })),
+      h(
+        'button',
+        { type: 'button', className: 'ar-summary__clear', onClick: onClear },
+        t('select.clear'),
+      ),
+    ),
+    h(
+      'div',
+      { className: 'ar-summary__body' },
+      groups.map((group) =>
+        h(
+          'div',
+          { key: group.id, className: 'ar-summary__group' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'ar-summary__group-head',
+              onClick: () => onJump(group.id),
+            },
+            group.name,
+            h(
+              'span',
+              { className: 'ar-summary__group-count' },
+              t('select.badge', {
+                n: group.lists.reduce((total, list) => total + list.items.length, 0),
+              }),
+            ),
+          ),
+          group.lists.map((list) =>
+            h(
+              'div',
+              { key: list.id, className: 'ar-summary__list' },
+              h('div', { className: 'ar-summary__list-head' }, list.title),
+              list.items.map((entry) =>
+                h(
+                  'div',
+                  { key: entry.bookmark.id, className: 'ar-summary__item' },
+                  h(
+                    'span',
+                    { className: 'ar-summary__item-title', title: entry.bookmark.title },
+                    entry.bookmark.title,
+                  ),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'ar-summary__remove',
+                      'aria-label': t('select.remove', { title: entry.bookmark.title }),
+                      title: t('select.remove', { title: entry.bookmark.title }),
+                      onClick: () => onRemove(entry.bookmark.id),
+                    },
+                    h(CloseGlyph, { size: 10 }),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+    h(
+      'div',
+      { className: 'ar-summary__foot' },
+      h('button', { type: 'button', className: 'ar-btn', onClick: onClose }, t('cancel')),
+    ),
+  )
+}
+
+module.exports = { Modal, BatchDeleteDialog, MoveDialog, SelectionSummary }
       },
 "./glyphs.js": function (module, exports, require) {
 /** Small inline SVGs shared by the sidebar row and the panel. */
@@ -315,7 +1009,69 @@ function PanelIcon({ size, active }) {
   return h(ArchiveGlyph, { size, strokeWidth: active ? 1.9 : 1.7 })
 }
 
-module.exports = { ArchiveGlyph, Chevron, SearchGlyph, PanelIcon }
+/** The card's delete affordance. */
+function TrashGlyph({ size }) {
+  return h(
+    'svg',
+    {
+      width: size === undefined ? 14 : size,
+      height: size === undefined ? 14 : size,
+      viewBox: '0 0 16 16',
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 1.5,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+      'aria-hidden': 'true',
+      focusable: 'false',
+    },
+    h('path', { d: 'M2.6 4.2h10.8' }),
+    h('path', { d: 'M5.2 4.2V3.1c0-.5.4-.9.9-.9h3.8c.5 0 .9.4.9.9v1.1' }),
+    h('path', { d: 'M4.1 4.2l.6 8.1c0 .5.4.9.9.9h4.8c.5 0 .9-.4.9-.9l.6-8.1' }),
+    h('path', { d: 'M6.7 6.8v3.9M9.3 6.8v3.9' }),
+  )
+}
+
+/** The checkmark inside the selection box. */
+function CheckGlyph({ size }) {
+  return h(
+    'svg',
+    {
+      width: size === undefined ? 11 : size,
+      height: size === undefined ? 11 : size,
+      viewBox: '0 0 12 12',
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 1.9,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+      'aria-hidden': 'true',
+      focusable: 'false',
+    },
+    h('path', { d: 'M2.2 6.2 4.9 8.9 9.8 3.6' }),
+  )
+}
+
+/** Small close mark for summary rows. */
+function CloseGlyph({ size }) {
+  return h(
+    'svg',
+    {
+      width: size === undefined ? 11 : size,
+      height: size === undefined ? 11 : size,
+      viewBox: '0 0 12 12',
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 1.6,
+      strokeLinecap: 'round',
+      'aria-hidden': 'true',
+      focusable: 'false',
+    },
+    h('path', { d: 'M3 3l6 6M9 3 3 9' }),
+  )
+}
+
+module.exports = { ArchiveGlyph, Chevron, SearchGlyph, PanelIcon, TrashGlyph, CheckGlyph, CloseGlyph }
       },
 "./header.js": function (module, exports, require) {
 /** The page header: the plugin name and the live search field. */
@@ -323,7 +1079,7 @@ const React = require('react')
 const h = React.createElement
 const { ArchiveGlyph, SearchGlyph } = require('./glyphs.js')
 
-function PageHeader({ t, query, onQueryChange }) {
+function PageHeader({ t, query, onQueryChange, busy }) {
   return h(
     'header',
     { className: 'ar-header', key: 'header' },
@@ -345,6 +1101,7 @@ function PageHeader({ t, query, onQueryChange }) {
         placeholder: t('search'),
         'aria-label': t('search'),
         spellCheck: false,
+        disabled: busy === true,
         onChange: (event) => onQueryChange(event.target.value),
       }),
     ),
@@ -375,6 +1132,59 @@ const zh = {
   'status.errorHint': '请检查插件目录下的 data/bookmarks.json 是否存在且格式正确。',
   retry: '重试',
   'open.failed': '无法在系统浏览器中打开这个链接',
+
+  select: '选择',
+  'select.exit': '取消选择',
+  'select.count': '已选 {n} 项',
+  'select.groups': '跨 {m} 个分组',
+  'select.hidden': '{k} 项不在当前筛选',
+  'select.emptyHint': '点选书签以批量操作',
+  'select.summary': '已选清单',
+  'select.clear': '清除全部',
+  'select.remove': '取消选择「{title}」',
+  'select.badge': '已选 {n} 项',
+  'select.cardAria': '选择「{title}」',
+  'select.bar': '批量操作',
+
+  'action.move': '移动',
+  'action.delete': '删除',
+
+  'delete.cardTitle': '删除这个书签？',
+  'delete.cardAria': '删除「{title}」',
+  'delete.cardConfirm': '确认删除',
+  'delete.batchTitle': '删除 {n} 个书签？',
+  'delete.irreversible': '删除后不可恢复。',
+  'delete.moreItems': '等 {n} 项',
+  'delete.batchConfirm': '确认删除',
+  'delete.busy': '删除中…',
+  'delete.done.one': '已删除 1 个书签',
+  'delete.done.many': '已删除 {n} 个书签',
+  'delete.failed': '删除失败，请重试',
+
+  'move.title': '移动 {n} 个书签',
+  'move.group': '目标分组',
+  'move.list': '目标列表',
+  'move.chooseGroup': '请选择目标分组',
+  'move.chooseList': '请选择目标列表',
+  'move.noLists': '该分组暂无列表',
+  'move.emptyTarget': '目标列表为空，将直接放入',
+  'move.preview': '将移动到「{group} / {list}」',
+  'move.skip': '其中 {k} 项已在目标列表，将跳过',
+  'move.same': '所选书签已在该列表中',
+  'move.optionSelected': '（已选 {k}）',
+  'move.confirm': '移动',
+  'move.busy': '移动中…',
+  'move.done': '已移动 {n} 个书签到「{group} / {list}」',
+  'move.failed': '移动失败，请重试',
+
+  stale: '书签库已在别处更新，已刷新',
+  readonly: '书签文件不可写',
+  'empty.list': '这个列表还没有书签',
+  'empty.group': '这个分组还没有列表',
+  'empty.library': '书签库是空的',
+  'empty.hint': '编辑 data/bookmarks.json 后点击重新加载',
+  reload: '重新加载',
+  cancel: '取消',
 }
 
 const en = {
@@ -394,6 +1204,59 @@ const en = {
   'status.errorHint': 'Check that data/bookmarks.json exists in the plugin directory and has the expected shape.',
   retry: 'Retry',
   'open.failed': 'Could not open this link in your browser',
+
+  select: 'Select',
+  'select.exit': 'Cancel selection',
+  'select.count': '{n} selected',
+  'select.groups': 'across {m} groups',
+  'select.hidden': '{k} not in the current filter',
+  'select.emptyHint': 'Select bookmarks to act on them',
+  'select.summary': 'Selection',
+  'select.clear': 'Clear all',
+  'select.remove': 'Deselect “{title}”',
+  'select.badge': '{n} selected',
+  'select.cardAria': 'Select “{title}”',
+  'select.bar': 'Bulk actions',
+
+  'action.move': 'Move',
+  'action.delete': 'Delete',
+
+  'delete.cardTitle': 'Delete this bookmark?',
+  'delete.cardAria': 'Delete “{title}”',
+  'delete.cardConfirm': 'Delete',
+  'delete.batchTitle': 'Delete {n} bookmarks?',
+  'delete.irreversible': "This can't be undone.",
+  'delete.moreItems': '…and {n} more',
+  'delete.batchConfirm': 'Delete',
+  'delete.busy': 'Deleting…',
+  'delete.done.one': 'Deleted 1 bookmark',
+  'delete.done.many': 'Deleted {n} bookmarks',
+  'delete.failed': "Couldn't delete. Try again.",
+
+  'move.title': 'Move {n} bookmarks',
+  'move.group': 'Group',
+  'move.list': 'List',
+  'move.chooseGroup': 'Choose a group',
+  'move.chooseList': 'Choose a target list',
+  'move.noLists': 'This group has no lists',
+  'move.emptyTarget': 'The target list is empty',
+  'move.preview': 'Move to “{group} / {list}”',
+  'move.skip': '{k} already there and will be skipped',
+  'move.same': 'The selection is already in that list',
+  'move.optionSelected': '({k} selected)',
+  'move.confirm': 'Move',
+  'move.busy': 'Moving…',
+  'move.done': 'Moved {n} bookmarks to “{group} / {list}”',
+  'move.failed': "Couldn't move. Try again.",
+
+  stale: 'The library changed elsewhere and was refreshed',
+  readonly: 'The bookmark file is read-only',
+  'empty.list': 'This list has no bookmarks yet',
+  'empty.group': 'This group has no lists yet',
+  'empty.library': 'The library is empty',
+  'empty.hint': 'Edit data/bookmarks.json, then reload',
+  reload: 'Reload',
+  cancel: 'Cancel',
 }
 
 module.exports = { zh, en }
@@ -545,6 +1408,29 @@ function countGroupMatches(groups, query) {
   return counts
 }
 
+/**
+ * Drops ids that no longer exist from the per-list order. A delete or move
+ * changes the library; keeping the old ids would let a bookmark moved away and
+ * later back "resurrect" its old slot, and would leave dead entries behind.
+ */
+function pruneOrder(order, collection) {
+  const valid = new Set()
+  for (const group of collection.groups) {
+    for (const list of group.lists) {
+      for (const bookmark of list.bookmarks) valid.add(bookmark.id)
+    }
+  }
+
+  let changed = false
+  const bookmarks = {}
+  for (const [listId, ids] of Object.entries(order.bookmarks)) {
+    const kept = ids.filter((id) => valid.has(id))
+    bookmarks[listId] = kept
+    if (kept.length !== ids.length) changed = true
+  }
+  return changed ? { ...order, bookmarks } : order
+}
+
 /** Returns a copy of the list with its bookmarks in the reader's order. */
 function orderListBookmarks(list, order) {
   return {
@@ -570,6 +1456,7 @@ module.exports = {
   matchesQuery,
   collectionSignature,
   countGroupMatches,
+  pruneOrder,
   orderListBookmarks,
   filterListBookmarks,
 }
@@ -577,8 +1464,8 @@ module.exports = {
 "./panel.js": function (module, exports, require) {
 /**
  * The Archive page: state ownership plus the two-column layout. Data loading,
- * local persistence, ordering, search, and the header/side sections each live
- * in a small module; this file wires them together.
+ * local persistence, ordering, selection, search, and the header/side sections
+ * each live in a small module; this file wires them together.
  */
 const React = require('react')
 const {
@@ -597,7 +1484,7 @@ const { GroupRail } = require('./sidebar.js')
 const { ListSection } = require('./bookmarks.js')
 const { Sortable } = require('./sortable.js')
 const { TONE_COUNT } = require('./constants.js')
-const { fetchLibrary, openBookmark: requestOpen } = require('./api.js')
+const { fetchLibrary, openBookmark: requestOpen, mutateLibrary: requestMutation } = require('./api.js')
 const {
   readSavedState,
   writeSavedState,
@@ -610,13 +1497,24 @@ const {
   moveId,
   collectionSignature,
   countGroupMatches,
+  pruneOrder,
   orderListBookmarks,
   filterListBookmarks,
 } = require('./order.js')
+const {
+  toggleId,
+  selectedEntries,
+  countsByGroup,
+  groupCount,
+  hiddenByQuery,
+  targetStats,
+  entryMap,
+} = require('./selection.js')
+const { BatchDeleteDialog, MoveDialog, SelectionSummary } = require('./dialogs.js')
 
 /**
  * @param props - the slot's locale-injected `t` seat.
- * @returns the full two-column library, or a loading/error placeholder.
+ * @returns the full two-column library, or a loading/error/empty placeholder.
  */
 function Panel(props) {
   const t = props.t
@@ -628,8 +1526,21 @@ function Panel(props) {
   const [query, setQuery] = useState('')
   const [toast, setToast] = useState(null)
   const [attempt, setAttempt] = useState(0)
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selected, setSelected] = useState(() => new Set())
+  const [confirmingId, setConfirmingId] = useState(null)
+  const [dialog, setDialog] = useState(null)
+  const [dialogError, setDialogError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [summaryOpen, setSummaryOpen] = useState(false)
+  const [focusRequest, setFocusRequest] = useState(null)
   const mainRef = useRef(null)
   const mountedRef = useRef(true)
+  const countButtonRef = useRef(null)
+  const cancelButtonRef = useRef(null)
+  const moveButtonRef = useRef(null)
+  const deleteButtonRef = useRef(null)
+  const dialogTriggerRef = useRef(null)
 
   const orderSignature = useMemo(
     () => (collection === null ? '' : collectionSignature(collection)),
@@ -653,12 +1564,11 @@ function Panel(props) {
         const payload = await fetchLibrary(controller.signal)
         if (!live) return
 
-        const groups = payload.groups
         const saved = readSavedState()
         const preferred =
-          (saved.groupId && groups.some((group) => group.id === saved.groupId)
+          (saved.groupId && payload.groups.some((group) => group.id === saved.groupId)
             ? saved.groupId
-            : null) ?? groups[0].id
+            : null) ?? payload.groups[0]?.id ?? null
         const signature = collectionSignature(payload)
         const savedOrder = readSavedOrder()
 
@@ -674,6 +1584,12 @@ function Panel(props) {
         )
         setActiveGroupId(preferred)
         setExpanded(saved.expanded)
+        setSelectionMode(false)
+        setSelected(new Set())
+        setConfirmingId(null)
+        setDialog(null)
+        setDialogError('')
+        setSummaryOpen(false)
         setStatus('ready')
       } catch (error) {
         if (!live || error?.name === 'AbortError') return
@@ -708,6 +1624,20 @@ function Panel(props) {
   useLayoutEffect(() => {
     if (mainRef.current !== null) mainRef.current.scrollTop = 0
   }, [activeGroupId])
+
+  useEffect(() => {
+    if (focusRequest === null) return undefined
+    const frame = requestAnimationFrame(() => {
+      for (const selector of focusRequest.selectors) {
+        const element = document.querySelector(selector)
+        if (element !== null && typeof element.focus === 'function') {
+          element.focus({ preventScroll: true })
+          return
+        }
+      }
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [focusRequest, collection])
 
   const sourceGroups = useMemo(() => collection?.groups ?? [], [collection])
   const groups = useMemo(
@@ -744,9 +1674,90 @@ function Panel(props) {
     () => visibleLists.map((list) => list.id),
     [visibleLists],
   )
+  const visibleCardCount = useMemo(
+    () => visibleLists.reduce((total, list) => total + list.bookmarks.length, 0),
+    [visibleLists],
+  )
   const groupMatches = useMemo(
     () => countGroupMatches(groups, queryText),
     [groups, queryText],
+  )
+
+  const entries = useMemo(
+    () => selectedEntries(groups, order, selected),
+    [groups, order, selected],
+  )
+  const selectedByGroup = useMemo(() => countsByGroup(entries), [entries])
+  const selectedGroupCount = useMemo(() => groupCount(entries), [entries])
+  const hiddenSelected = useMemo(
+    () => hiddenByQuery(entries, queryText),
+    [entries, queryText],
+  )
+  const selectionSummaryOpen = summaryOpen && entries.length > 0
+
+  const dialogEntries = useMemo(() => {
+    if (dialog === null) return []
+    const lookup = entryMap(entries)
+    return dialog.ids.map((id) => lookup.get(id)).filter(Boolean)
+  }, [dialog, entries])
+
+  const stats = collection?.stats ?? { groups: 0, lists: 0, bookmarks: 0 }
+  const canMutate = collection?.capabilities?.mutate === true
+
+  const focusLater = useCallback((selectors) => {
+    setFocusRequest({ selectors, nonce: Date.now() + Math.random() })
+  }, [])
+
+  const applyPayload = useCallback((payload) => {
+    setCollection(payload)
+    setOrder((current) => pruneOrder(current, payload))
+    setActiveGroupId((current) =>
+      payload.groups.some((group) => group.id === current)
+        ? current
+        : payload.groups[0]?.id ?? null,
+    )
+  }, [])
+
+  const resetInteraction = useCallback(() => {
+    setSelectionMode(false)
+    setSelected(new Set())
+    setConfirmingId(null)
+    setDialog(null)
+    setDialogError('')
+    setSummaryOpen(false)
+  }, [])
+
+  const handleMutationError = useCallback(
+    (error) => {
+      if (error?.code === 'stale-library' && error.library) {
+        applyPayload(error.library)
+        resetInteraction()
+        setToast(t('stale'))
+        focusLater(['[data-group-title="true"]', '.ar-group[data-active="true"]'])
+        return true
+      }
+      if (error?.code === 'library-readonly') {
+        setDialogError(t('readonly'))
+        setToast(t('readonly'))
+        return true
+      }
+      return false
+    },
+    [applyPayload, resetInteraction, focusLater, t],
+  )
+
+  const findBookmarkList = useCallback(
+    (bookmarkId) => {
+      for (const group of sourceGroups) {
+        for (const list of group.lists) {
+          if (list.bookmarks.some((bookmark) => bookmark.id === bookmarkId)) {
+            return { group, list }
+          }
+        }
+      }
+      return null
+    },
+    [sourceGroups],
   )
 
   const openBookmark = useCallback(
@@ -762,37 +1773,293 @@ function Panel(props) {
     [t],
   )
 
-  const toggleList = useCallback((listId) => {
-    setExpanded((current) => {
-      const open = current[listId] !== false
-      return { ...current, [listId]: !open }
-    })
-  }, [])
+  const deleteOne = useCallback(
+    async (bookmarkId) => {
+      if (busy || collection === null || !canMutate) return
+      const found = findBookmarkList(bookmarkId)
+      let nextId = null
+      if (found !== null) {
+        const ordered = orderListBookmarks(found.list, order)
+        const index = ordered.bookmarks.findIndex((bookmark) => bookmark.id === bookmarkId)
+        const neighbour =
+          index === -1 ? null : ordered.bookmarks[index + 1] ?? ordered.bookmarks[index - 1] ?? null
+        nextId = neighbour === null ? null : neighbour.id
+      }
+      const listId = found === null ? null : found.list.id
+      const listOpen = listId !== null && (queryText !== '' || expanded[listId] !== false)
 
-  const expandAll = useCallback(() => setExpanded({}), [])
+      setBusy(true)
+      try {
+        const payload = await requestMutation(
+          { type: 'delete', ids: [bookmarkId] },
+          collection.revision,
+        )
+        applyPayload(payload)
+        setConfirmingId(null)
+        setToast(t('delete.done.one'))
+        const selectors = []
+        if (listOpen && nextId !== null) selectors.push('[data-focus-id="' + nextId + '"]')
+        if (listId !== null) selectors.push('[data-list-head="' + listId + '"]')
+        selectors.push('[data-group-title="true"]')
+        focusLater(selectors)
+      } catch (error) {
+        if (handleMutationError(error)) return
+        setToast(t('delete.failed'))
+      } finally {
+        setBusy(false)
+      }
+    },
+    [
+      busy,
+      collection,
+      canMutate,
+      findBookmarkList,
+      order,
+      queryText,
+      expanded,
+      applyPayload,
+      focusLater,
+      handleMutationError,
+      t,
+    ],
+  )
+
+  const confirmDeleteCard = useCallback(() => {
+    if (confirmingId === null) return
+    void deleteOne(confirmingId)
+  }, [confirmingId, deleteOne])
+
+  const cancelDeleteCard = useCallback(() => {
+    if (busy) return
+    setConfirmingId(null)
+  }, [busy])
+
+  const requestDeleteCard = useCallback(
+    (bookmarkId) => {
+      if (busy || !canMutate) return
+      setConfirmingId(bookmarkId)
+      setSummaryOpen(false)
+    },
+    [busy, canMutate],
+  )
+
+  const confirmBatchDelete = useCallback(async () => {
+    if (dialog === null || dialog.type !== 'delete' || busy || collection === null || !canMutate) return
+    const ids = dialog.ids
+    setBusy(true)
+    setDialogError('')
+    try {
+      const payload = await requestMutation({ type: 'delete', ids }, collection.revision)
+      applyPayload(payload)
+      resetInteraction()
+      setToast(
+        ids.length === 1 ? t('delete.done.one') : t('delete.done.many', { n: ids.length }),
+      )
+      focusLater(['[data-group-title="true"]', '.ar-group[data-active="true"]'])
+    } catch (error) {
+      if (handleMutationError(error)) return
+      setDialogError(t('delete.failed'))
+    } finally {
+      setBusy(false)
+    }
+  }, [
+    dialog,
+    busy,
+    collection,
+    canMutate,
+    applyPayload,
+    resetInteraction,
+    focusLater,
+    handleMutationError,
+    t,
+  ])
+
+  const confirmMove = useCallback(
+    async (target) => {
+      if (dialog === null || dialog.type !== 'move' || busy || collection === null || !canMutate) return
+      const targetGroup = collection.groups.find((group) => group.id === target.groupId)
+      const targetList =
+        targetGroup === undefined
+          ? undefined
+          : targetGroup.lists.find((list) => list.id === target.listId)
+      if (targetGroup === undefined || targetList === undefined) {
+        setDialogError(t('move.failed'))
+        return
+      }
+
+      const ids = dialog.ids
+      const moving = targetStats(entries, target.listId).moving
+      setBusy(true)
+      setDialogError('')
+      try {
+        const payload = await requestMutation(
+          {
+            type: 'move',
+            ids,
+            target: { groupId: target.groupId, listId: target.listId },
+          },
+          collection.revision,
+        )
+        applyPayload(payload)
+        resetInteraction()
+        setToast(
+          t('move.done', {
+            n: moving,
+            group: targetGroup.name,
+            list: targetList.title,
+          }),
+        )
+
+        if (target.groupId === activeGroupId) {
+          setExpanded((current) => ({ ...current, [target.listId]: true }))
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const section = document.querySelector(
+                '[data-section-id="' + target.listId + '"]',
+              )
+              if (section !== null && typeof section.scrollIntoView === 'function') {
+                section.scrollIntoView({ block: 'nearest' })
+              }
+            })
+          })
+          focusLater([
+            '[data-list-head="' + target.listId + '"]',
+            '[data-group-title="true"]',
+          ])
+        } else {
+          focusLater(['[data-group-title="true"]', '.ar-group[data-active="true"]'])
+        }
+      } catch (error) {
+        if (handleMutationError(error)) return
+        setDialogError(t('move.failed'))
+      } finally {
+        setBusy(false)
+      }
+    },
+    [
+      dialog,
+      busy,
+      collection,
+      canMutate,
+      entries,
+      activeGroupId,
+      applyPayload,
+      resetInteraction,
+      focusLater,
+      handleMutationError,
+      t,
+    ],
+  )
+
+  const openBatchDelete = useCallback(() => {
+    if (busy || entries.length === 0 || !canMutate) return
+    dialogTriggerRef.current = deleteButtonRef.current
+    setDialog({ type: 'delete', ids: entries.map((entry) => entry.bookmark.id) })
+    setDialogError('')
+  }, [busy, entries, canMutate])
+
+  const openMove = useCallback(() => {
+    if (busy || entries.length === 0 || !canMutate) return
+    dialogTriggerRef.current = moveButtonRef.current
+    setDialog({ type: 'move', ids: entries.map((entry) => entry.bookmark.id) })
+    setDialogError('')
+  }, [busy, entries, canMutate])
+
+  const closeDialog = useCallback(() => {
+    if (busy) return
+    const trigger = dialogTriggerRef.current
+    setDialog(null)
+    setDialogError('')
+    if (trigger !== null && trigger.isConnected) {
+      requestAnimationFrame(() => trigger.focus())
+    }
+  }, [busy])
+
+  const enterSelection = useCallback(() => {
+    if (busy || !canMutate) return
+    setSelectionMode(true)
+    setSummaryOpen(false)
+  }, [busy, canMutate])
+
+  const exitSelection = useCallback(() => {
+    if (busy) return
+    setSelectionMode(false)
+    setSelected(new Set())
+    setSummaryOpen(false)
+    setConfirmingId(null)
+    focusLater(['.ar-main__select', '[data-group-title="true"]'])
+  }, [busy, focusLater])
+
+  const toggleSelect = useCallback(
+    (bookmarkId) => {
+      if (busy || !canMutate) return
+      const next = toggleId(selected, bookmarkId)
+      setSelected(next)
+      setSelectionMode(true)
+      setConfirmingId(null)
+      if (next.size === 0) setSummaryOpen(false)
+    },
+    [busy, selected, canMutate],
+  )
+
+  const selectGroup = useCallback(
+    (groupId) => {
+      if (busy) return
+      setActiveGroupId(groupId)
+      setConfirmingId(null)
+      setSummaryOpen(false)
+    },
+    [busy],
+  )
+
+  const changeQuery = useCallback(
+    (value) => {
+      if (busy) return
+      setQuery(value)
+      setConfirmingId(null)
+      setSummaryOpen(false)
+    },
+    [busy],
+  )
+
+  const toggleList = useCallback(
+    (listId) => {
+      if (busy) return
+      setExpanded((current) => {
+        const open = current[listId] !== false
+        return { ...current, [listId]: !open }
+      })
+      setConfirmingId(null)
+    },
+    [busy],
+  )
+
+  const expandAll = useCallback(() => {
+    if (busy) return
+    setExpanded({})
+  }, [busy])
+
   const collapseAll = useCallback(() => {
+    if (busy) return
     const next = {}
     for (const list of activeLists) next[list.id] = false
     setExpanded(next)
-  }, [activeLists])
-
-  /** The one header button collapses only when every list is already open. */
-  const allListsOpen =
-    activeGroup !== null && activeLists.every((list) => expanded[list.id] !== false)
+  }, [busy, activeLists])
 
   const reorderGroups = useCallback(
     (from, to) => {
+      if (busy) return
       setOrder((current) => {
         const next = moveId(groupIds, from, to)
         return next === groupIds ? current : { ...current, groups: next }
       })
     },
-    [groupIds],
+    [busy, groupIds],
   )
 
   const reorderLists = useCallback(
     (from, to) => {
-      if (activeGroup === null) return
+      if (busy || activeGroup === null) return
       setOrder((current) => {
         const next = moveId(visibleListIds, from, to)
         const key = activeGroup.id
@@ -801,20 +2068,78 @@ function Panel(props) {
           : { ...current, lists: { ...current.lists, [key]: next } }
       })
     },
-    [activeGroup, visibleListIds],
+    [busy, activeGroup, visibleListIds],
   )
 
-  const reorderBookmarks = useCallback((listId, ids, from, to) => {
-    setOrder((current) => {
-      const next = moveId(ids, from, to)
-      return next === ids
-        ? current
-        : { ...current, bookmarks: { ...current.bookmarks, [listId]: next } }
+  const reorderBookmarks = useCallback(
+    (listId, ids, from, to) => {
+      if (busy) return
+      setOrder((current) => {
+        const next = moveId(ids, from, to)
+        return next === ids
+          ? current
+          : { ...current, bookmarks: { ...current.bookmarks, [listId]: next } }
+      })
+    },
+    [busy],
+  )
+
+  const toggleSummary = useCallback(() => {
+    if (busy || entries.length === 0) return
+    setSummaryOpen((current) => !current)
+  }, [busy, entries.length])
+
+  const closeSummary = useCallback(() => {
+    setSummaryOpen(false)
+    requestAnimationFrame(() => {
+      if (countButtonRef.current !== null && countButtonRef.current.disabled !== true) {
+        countButtonRef.current.focus()
+      } else if (cancelButtonRef.current !== null) {
+        cancelButtonRef.current.focus()
+      }
     })
   }, [])
 
-  const stats = collection?.stats ?? { groups: 0, lists: 0, bookmarks: 0 }
-  const header = h(PageHeader, { t, query, onQueryChange: setQuery })
+  const removeFromSummary = useCallback(
+    (bookmarkId) => {
+      const next = new Set(selected)
+      next.delete(bookmarkId)
+      setSelected(next)
+      if (next.size === 0) setSummaryOpen(false)
+    },
+    [selected],
+  )
+
+  const clearSelection = useCallback(() => {
+    setSelected(new Set())
+    setSummaryOpen(false)
+  }, [])
+
+  const jumpToGroup = useCallback((groupId) => {
+    setActiveGroupId(groupId)
+    setSummaryOpen(false)
+    setConfirmingId(null)
+  }, [])
+
+  /* Esc leaves selection mode; the summary, a dialog, or a card confirm owns
+     the key first when one of them is open. */
+  useEffect(() => {
+    if (!selectionMode) return undefined
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return
+      if (dialog !== null || confirmingId !== null || summaryOpen) return
+      event.preventDefault()
+      exitSelection()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [selectionMode, dialog, confirmingId, summaryOpen, exitSelection])
+
+  const header = h(PageHeader, { t, query, onQueryChange: changeQuery, busy })
+  const allListsOpen =
+    activeGroup !== null &&
+    activeLists.length > 0 &&
+    activeLists.every((list) => expanded[list.id] !== false)
 
   /**
    * Which way the right column should slide when the group changes: the new
@@ -871,20 +2196,61 @@ function Panel(props) {
     )
   }
 
+  if (collection !== null && groups.length === 0) {
+    return h(
+      'div',
+      { className: 'ar-root' },
+      h('style', { key: 'styles' }, CSS),
+      header,
+      h(
+        'div',
+        { className: 'ar-state' },
+        h('div', { className: 'ar-state__title' }, t('empty.library')),
+        h('div', { className: 'ar-state__hint' }, t('empty.hint')),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ar-btn',
+            style: { borderColor: 'var(--dsw-alias-border-l2)' },
+            onClick: () => setAttempt((value) => value + 1),
+          },
+          t('reload'),
+        ),
+      ),
+    )
+  }
+
   const side = h(GroupRail, {
     t,
     stats,
     groups,
     groupIds,
     groupMatches,
+    selectedByGroup,
     activeGroupId: activeGroup === null ? null : activeGroup.id,
-    onSelect: setActiveGroupId,
+    selectionMode,
+    busy,
+    dragDisabled: confirmingId !== null || dialog !== null,
+    onSelect: selectGroup,
     onReorder: reorderGroups,
   })
 
   const mainChildren = []
 
   if (activeGroup !== null) {
+    const showExpand = queryText === '' && activeLists.length > 0
+    const showSelect = canMutate && (selectionMode || visibleCardCount > 0)
+    const meta =
+      queryText === ''
+        ? [
+            t('count.lists', { n: activeLists.length }),
+            t('count.bookmarks', { n: activeGroup.count }),
+          ].join(' · ')
+        : t('count.match', {
+            n: visibleLists.reduce((total, list) => total + list.count, 0),
+          })
+
     mainChildren.push(
       h(
         'div',
@@ -892,39 +2258,53 @@ function Panel(props) {
         h(
           'div',
           { className: 'ar-main__titles' },
-          h('h2', { className: 'ar-main__title', title: activeGroup.name }, activeGroup.name),
           h(
-            'div',
-            { className: 'ar-main__meta' },
-            queryText === ''
-              ? [
-                  t('count.lists', { n: activeLists.length }),
-                  t('count.bookmarks', { n: activeGroup.count }),
-                ].join(' · ')
-              : t('count.match', {
-                  n: visibleLists.reduce((total, list) => total + list.count, 0),
-                }),
+            'h2',
+            {
+              className: 'ar-main__title',
+              title: activeGroup.name,
+              'data-group-title': 'true',
+              tabIndex: -1,
+            },
+            activeGroup.name,
           ),
+          h('div', { className: 'ar-main__meta' }, meta),
         ),
-        queryText === ''
+        showExpand || showSelect
           ? h(
               'div',
               { className: 'ar-main__actions' },
-              h(
-                'button',
-                {
-                  type: 'button',
-                  className: 'ar-btn',
-                  onClick: allListsOpen ? collapseAll : expandAll,
-                },
-                allListsOpen ? t('collapseAll') : t('expandAll'),
-              ),
+              showExpand
+                ? h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'ar-btn ar-main__expand',
+                      disabled: busy,
+                      onClick: allListsOpen ? collapseAll : expandAll,
+                    },
+                    allListsOpen ? t('collapseAll') : t('expandAll'),
+                  )
+                : null,
+              showSelect
+                ? h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'ar-btn ar-main__select',
+                      'data-active': selectionMode ? 'true' : undefined,
+                      disabled: busy,
+                      onClick: selectionMode ? exitSelection : enterSelection,
+                    },
+                    selectionMode ? t('select.exit') : t('select'),
+                  )
+                : null,
             )
           : null,
       ),
     )
 
-    if (visibleLists.length === 0) {
+    if (queryText !== '' && visibleLists.length === 0) {
       mainChildren.push(
         h(
           'div',
@@ -932,8 +2312,16 @@ function Panel(props) {
           h(
             'div',
             { className: 'ar-state__title' },
-            queryText === '' ? t('status.empty') : t('status.noMatch', { q: query.trim() }),
+            t('status.noMatch', { q: query.trim() }),
           ),
+        ),
+      )
+    } else if (queryText === '' && activeLists.length === 0) {
+      mainChildren.push(
+        h(
+          'div',
+          { className: 'ar-state', key: 'empty-group' },
+          h('div', { className: 'ar-state__title' }, t('empty.group')),
         ),
       )
     } else {
@@ -945,19 +2333,35 @@ function Panel(props) {
             key: 'sections',
             ids: visibleListIds,
             axis: 'y',
-            disabled: queryText !== '' || visibleListIds.length < 2,
+            disabled:
+              queryText !== '' ||
+              visibleListIds.length < 2 ||
+              busy ||
+              selectionMode ||
+              confirmingId !== null,
             onReorder: reorderLists,
           },
           visibleLists.map((list) => {
             const open = queryText === '' ? expanded[list.id] !== false : true
             return h(ListSection, {
               key: list.id,
+              t,
               list,
               open,
               collapsible: queryText === '',
               sortable: queryText === '',
+              selectionMode,
+              selected,
+              busy,
+              canMutate,
+              confirmingId,
+              deleteBusy: busy,
               onToggle: () => toggleList(list.id),
               onOpen: openBookmark,
+              onToggleSelect: toggleSelect,
+              onRequestDelete: requestDeleteCard,
+              onCancelDelete: cancelDeleteCard,
+              onConfirmDelete: confirmDeleteCard,
               onReorderBookmarks: reorderBookmarks,
             })
           }),
@@ -981,17 +2385,210 @@ function Panel(props) {
     ),
   )
 
+  let countText = t('select.count', { n: entries.length })
+  if (selectedGroupCount > 1) {
+    countText += ' · ' + t('select.groups', { m: selectedGroupCount })
+  }
+  if (queryText !== '' && hiddenSelected > 0) {
+    countText += ' · ' + t('select.hidden', { k: hiddenSelected })
+  }
+
+  const dock = selectionMode && canMutate
+    ? h(
+        'div',
+        { className: 'ar-bar-dock', key: 'bar' },
+        selectionSummaryOpen
+          ? h(SelectionSummary, {
+              t,
+              entries,
+              onRemove: removeFromSummary,
+              onClear: clearSelection,
+              onJump: jumpToGroup,
+              onClose: closeSummary,
+            })
+          : null,
+        h(
+          'div',
+          { className: 'ar-bar', role: 'toolbar', 'aria-label': t('select.bar') },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'ar-bar__count',
+              ref: countButtonRef,
+              'aria-expanded': selectionSummaryOpen ? 'true' : 'false',
+              'aria-live': 'polite',
+              title: entries.length === 0 ? t('select.emptyHint') : countText,
+              disabled: entries.length === 0 || busy,
+              onClick: toggleSummary,
+            },
+            countText,
+          ),
+          h(
+            'div',
+            { className: 'ar-bar__actions' },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'ar-bar__btn',
+                ref: moveButtonRef,
+                disabled: entries.length === 0 || busy,
+                onClick: openMove,
+              },
+              t('action.move'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'ar-bar__btn ar-bar__btn--danger',
+                ref: deleteButtonRef,
+                disabled: entries.length === 0 || busy,
+                onClick: openBatchDelete,
+              },
+              t('action.delete'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'ar-bar__btn ar-bar__btn--ghost',
+                ref: cancelButtonRef,
+                disabled: busy,
+                onClick: exitSelection,
+              },
+              t('cancel'),
+            ),
+          ),
+        ),
+      )
+    : null
+
+  let dialogNode = null
+  if (dialog !== null && dialog.type === 'delete') {
+    dialogNode = h(BatchDeleteDialog, {
+      t,
+      entries: dialogEntries,
+      busy,
+      error: dialogError,
+      onCancel: closeDialog,
+      onConfirm: confirmBatchDelete,
+    })
+  } else if (dialog !== null && dialog.type === 'move') {
+    dialogNode = h(MoveDialog, {
+      t,
+      groups,
+      activeGroupId: activeGroup === null ? null : activeGroup.id,
+      entries: dialogEntries,
+      busy,
+      error: dialogError,
+      onCancel: closeDialog,
+      onConfirm: confirmMove,
+    })
+  }
+
   return h(
     'div',
-    { className: 'ar-root' },
+    {
+      className: 'ar-root',
+      'data-select-mode': selectionMode ? 'true' : 'false',
+      'data-dialog-open': dialog !== null ? 'true' : 'false',
+      'data-busy': busy ? 'true' : 'false',
+    },
     h('style', { key: 'styles' }, CSS),
     header,
     h('div', { className: 'ar-body' }, side, main),
+    dock,
+    dialogNode,
     toast === null ? null : h('div', { className: 'ar-toast', role: 'status' }, toast),
   )
 }
 
 module.exports = { Panel }
+      },
+"./selection.js": function (module, exports, require) {
+/**
+ * Pure selection helpers. The panel owns the React state; these functions only
+ * turn the id set into ordered entries and counts, so the same ordering can
+ * drive the bar, the selection summary, and a batch move request.
+ */
+const { applyOrder, matchesQuery } = require('./order.js')
+
+/** Returns a new Set with `id` toggled. */
+function toggleId(selected, id) {
+  const next = new Set(selected)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  return next
+}
+
+/**
+ * Every selected bookmark in display order: group order, then list order, then
+ * card order. Uses the whole library (not the search filter), so a hidden
+ * selection keeps its position when it is moved.
+ */
+function selectedEntries(groups, order, selected) {
+  if (selected.size === 0) return []
+  const entries = []
+  for (const group of applyOrder(groups, order.groups)) {
+    for (const list of applyOrder(group.lists, order.lists[group.id] ?? [])) {
+      for (const bookmark of applyOrder(list.bookmarks, order.bookmarks[list.id] ?? [])) {
+        if (selected.has(bookmark.id)) entries.push({ group, list, bookmark })
+      }
+    }
+  }
+  return entries
+}
+
+/** Selected count per group id, for the left rail badges. */
+function countsByGroup(entries) {
+  const counts = new Map()
+  for (const entry of entries) {
+    counts.set(entry.group.id, (counts.get(entry.group.id) ?? 0) + 1)
+  }
+  return counts
+}
+
+/** How many distinct groups the selection touches. */
+function groupCount(entries) {
+  return new Set(entries.map((entry) => entry.group.id)).size
+}
+
+/** Selected bookmarks the current search hides. */
+function hiddenByQuery(entries, query) {
+  if (query === '') return 0
+  return entries.reduce(
+    (total, entry) => total + (matchesQuery(entry.bookmark, query) ? 0 : 1),
+    0,
+  )
+}
+
+/** Split a move into "already there" and "actually moving". */
+function targetStats(entries, listId) {
+  let inTarget = 0
+  for (const entry of entries) {
+    if (entry.list.id === listId) inTarget += 1
+  }
+  return { total: entries.length, inTarget, moving: entries.length - inTarget }
+}
+
+/** Fast lookup for the dialog snapshots. */
+function entryMap(entries) {
+  const map = new Map()
+  for (const entry of entries) map.set(entry.bookmark.id, entry)
+  return map
+}
+
+module.exports = {
+  toggleId,
+  selectedEntries,
+  countsByGroup,
+  groupCount,
+  hiddenByQuery,
+  targetStats,
+  entryMap,
+}
       },
 "./sidebar.js": function (module, exports, require) {
 /** The narrow left rail: group selection, drag order, and global stats. */
@@ -1001,7 +2598,20 @@ const { GroupRow } = require('./bookmarks.js')
 const { Sortable } = require('./sortable.js')
 const { TONE_COUNT } = require('./constants.js')
 
-function GroupRail({ t, stats, groups, groupIds, groupMatches, activeGroupId, onSelect, onReorder }) {
+function GroupRail({
+  t,
+  stats,
+  groups,
+  groupIds,
+  groupMatches,
+  selectedByGroup,
+  activeGroupId,
+  selectionMode,
+  busy,
+  dragDisabled,
+  onSelect,
+  onReorder,
+}) {
   return h(
     'aside',
     { className: 'ar-side', key: 'side' },
@@ -1012,18 +2622,21 @@ function GroupRail({ t, stats, groups, groupIds, groupMatches, activeGroupId, on
         className: 'ar-side__list',
         ids: groupIds,
         axis: 'y',
-        disabled: groupIds.length < 2,
+        disabled: groupIds.length < 2 || busy === true || selectionMode === true || dragDisabled === true,
         onReorder,
         'aria-label': t('groups'),
       },
       groups.map((group, index) =>
         h(GroupRow, {
           key: group.id,
+          t,
           group,
           tone: index % TONE_COUNT,
           count: groupMatches === null ? group.count : groupMatches.get(group.id) ?? 0,
+          selectedCount: selectedByGroup.get(group.id) ?? 0,
           active: group.id === activeGroupId,
           dim: groupMatches !== null && (groupMatches.get(group.id) ?? 0) === 0,
+          disabled: busy === true,
           onClick: () => onSelect(group.id),
         }),
       ),
@@ -1538,6 +3151,20 @@ function Sortable({ ids, axis, disabled, className, onReorder, children, ...rest
       if (props.disabled || props.ids.length < 2) return;
       const target = event.target;
       const item = target instanceof Element ? target.closest('[data-sort-id]') : null;
+      const interactive =
+        target instanceof Element
+          ? target.closest('button, input, select, textarea, [data-no-drag]')
+          : null;
+      /* A group row / list head is itself the drag handle; only an action
+         nested inside a card (checkbox, trash, confirm buttons) opts out. */
+      if (
+        interactive !== null &&
+        item !== null &&
+        interactive !== item &&
+        item.contains(interactive)
+      ) {
+        return;
+      }
       if (item === null || item.closest('[data-sort-scope]') !== root) return;
       const sortId = item.getAttribute('data-sort-id');
       const index = sortId === null ? -1 : props.ids.indexOf(sortId);
@@ -1777,7 +3404,7 @@ module.exports = {
  * Dividers derive their weight from the theme tokens as well; one soft shadow
  * is the only literal colour, matching the other plugin panels.
  */
-const CSS = `.ar-root{box-sizing:border-box;display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;padding-top:var(--dsh-frame-top-clearance,0px);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;--ar-line:var(--dsw-alias-border-l1);--ar-line-strong:var(--dsw-alias-border-l2);--ar-card-lift:3%;--ar-card-lift-hover:6%}
+const CSS = `.ar-root{position:relative;box-sizing:border-box;display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;padding-top:var(--dsh-frame-top-clearance,0px);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;--ar-line:var(--dsw-alias-border-l1);--ar-line-strong:var(--dsw-alias-border-l2);--ar-card-lift:3%;--ar-card-lift-hover:6%}
 /* Light surfaces read darker than dark ones at the same mix step, so the light theme lifts much less. The host flags dark mode on <body>. */
 body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-root *,.ar-root *::before,.ar-root *::after{box-sizing:border-box}
@@ -1792,6 +3419,7 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-search__glyph{position:absolute;left:7px;display:inline-flex;color:var(--dsw-alias-label-secondary);pointer-events:none}
 .ar-search__input{width:100%;height:100%;padding:0 8px 0 26px;border:0;border-radius:inherit;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;outline:none}
 .ar-search__input::placeholder{color:var(--dsw-alias-label-secondary);opacity:.85}
+.ar-search__input:disabled{opacity:.6}
 .ar-body{display:flex;flex:1;min-height:0}
 /* Left rail. Its band header shares one height with the right column's, so both lists start on the same line. */
 .ar-side{flex:none;display:flex;flex-direction:column;width:220px;min-height:0;border-right:1px solid var(--ar-line-strong)}
@@ -1799,7 +3427,7 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-side__list{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:1px;padding:6px 8px 10px}
 .ar-side__foot{flex:none;display:flex;flex-direction:column;gap:1px;padding:10px 16px 12px;border-top:1px solid var(--ar-line);color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:16px;font-variant-numeric:tabular-nums}
 .ar-side__foot span{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.ar-group{position:relative;display:flex;align-items:center;gap:8px;width:100%;min-width:0;height:32px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none;transition:background-color .12s ease,color .12s ease}
+.ar-group{position:relative;display:flex;align-items:center;gap:6px;width:100%;min-width:0;height:32px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none;transition:background-color .12s ease,color .12s ease}
 .ar-group:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
 /* The selected group adds its own hue to the base surface: a tinted fill plus a
    2px accent rail on the left edge, so selection reads at a glance even while
@@ -1808,30 +3436,41 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-group[data-active="true"]:hover{background:color-mix(in oklab,var(--ar-group-ink,var(--dsw-alias-brand-primary)) 18%,var(--dsw-alias-bg-base) 82%)}
 .ar-group[data-active="true"]::before{content:"";position:absolute;left:3px;top:7px;bottom:7px;width:2px;border-radius:1px;background:var(--ar-group-ink,var(--dsw-alias-brand-primary))}
 .ar-group[data-dim="true"]{opacity:.45}
+.ar-group:disabled{cursor:default}
 .ar-group:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
 .ar-group__name{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-weight:600;color:var(--ar-group-ink,var(--dsw-alias-label-primary))}
 .ar-group[data-active="true"] .ar-group__name{font-weight:700}
 .ar-group__count{flex:none;font-size:11.5px;font-variant-numeric:tabular-nums;opacity:.85}
+.ar-group__sel{flex:none;display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted);font-size:10px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
 /* Right column: one band header, then the group's lists. Text sits on the 44px rail used by section titles. */
 .ar-main{flex:1;min-width:0;min-height:0;overflow-x:hidden;overflow-y:auto;scrollbar-gutter:stable;padding:0 0 40px}
+.ar-root[data-select-mode="true"] .ar-main{padding-bottom:90px}
 /* A group switch remounts this wrapper (keyed by group id), replaying the entry animation. */
-.ar-view{animation:ar-view-in .26s cubic-bezier(.2,.7,.2,1) both}
+.ar-view{min-height:100%;display:flex;flex-direction:column;animation:ar-view-in .26s cubic-bezier(.2,.7,.2,1) both}
 .ar-view[data-dir="up"]{--ar-shift:-6px}
 .ar-view[data-dir="down"]{--ar-shift:6px}
-.ar-main__head{display:flex;align-items:center;gap:12px;height:40px;padding:0 16px 0 44px;border-bottom:1px solid var(--ar-line)}
+.ar-main__head{flex:none;display:flex;align-items:center;gap:12px;height:40px;padding:0 16px 0 44px;border-bottom:1px solid var(--ar-line)}
 .ar-main__titles{flex:1;min-width:0;display:flex;align-items:center;gap:8px}
-.ar-main__title{flex:0 1 auto;min-width:0;margin:0;font-size:16px;line-height:22px;font-weight:600;letter-spacing:-.005em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ar-group-ink,var(--dsw-alias-label-primary))}
+.ar-main__title{flex:0 1 auto;min-width:0;margin:0;font-size:16px;line-height:22px;font-weight:600;letter-spacing:-.005em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ar-group-ink,var(--dsw-alias-label-primary));outline:none}
 .ar-main__meta{flex:none;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
 .ar-main__actions{flex:none;display:flex;align-items:center;gap:4px}
+.ar-main__select[data-active="true"]{background:color-mix(in oklab,var(--dsw-alias-brand-primary) 12%,transparent);color:var(--dsw-alias-brand-primary)}
 .ar-btn{appearance:none;display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 9px;border:.5px solid transparent;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer;transition:background-color .14s ease,color .14s ease}
 .ar-btn:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ar-btn:disabled{opacity:.5;cursor:default}
 .ar-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
-.ar-sections{display:flex;flex-direction:column;padding:6px 0 0}
+.ar-btn--danger{border-color:color-mix(in oklab,var(--dsw-alias-label-error) 30%,transparent);background:color-mix(in oklab,var(--dsw-alias-label-error) 10%,transparent);color:var(--dsw-alias-label-error)}
+.ar-btn--danger:hover{background:color-mix(in oklab,var(--dsw-alias-label-error) 16%,transparent);color:var(--dsw-alias-label-error)}
+.ar-btn--primary{border-color:transparent;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted)}
+.ar-btn--primary:hover{background:color-mix(in oklab,var(--dsw-alias-brand-primary) 86%,var(--dsw-alias-label-primary) 14%);color:var(--dsw-alias-label-primary-inverted)}
+.ar-sections{flex:1 0 auto;display:flex;flex-direction:column;padding:6px 0 0}
 .ar-sections>.ar-sec{border-top:1px solid var(--ar-line)}
 .ar-sections>.ar-sec:first-child{border-top:0}
 .ar-sec__head{position:relative;display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 16px 0 24px;border:0;border-radius:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;font-weight:600;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none}
 button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
 .ar-sec__head[data-static="true"]{cursor:default}
+button.ar-sec__head:disabled{cursor:default}
+button.ar-sec__head:disabled:hover{background:transparent}
 .ar-sec__head:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
 .ar-sec__chev{flex:none;display:inline-flex;align-items:center;color:var(--ar-list-ink-soft,var(--dsw-alias-label-secondary));transition:transform .16s ease}
 .ar-sec[data-open="true"] .ar-sec__chev{transform:rotate(90deg)}
@@ -1841,6 +3480,7 @@ button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
 .ar-sec__body{display:grid;grid-template-rows:0fr;visibility:hidden;transition:grid-template-rows .24s cubic-bezier(.2,.7,.2,1),visibility 0s linear .24s}
 .ar-sec[data-open="true"] .ar-sec__body{grid-template-rows:1fr;visibility:visible;transition:grid-template-rows .24s cubic-bezier(.2,.7,.2,1),visibility 0s}
 .ar-sec__inner{min-height:0;overflow:hidden}
+.ar-sec__empty{padding:8px 16px 12px 44px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
 /* One candy hue per group, cycling. The group title takes the saturated ink, its lists take a
    desaturated ink of the same hue, so colour alone shows the parent/child relation. OKLCH fixes the
    perceived lightness across hues; mixing with the theme's primary label keeps both themes readable. */
@@ -1856,10 +3496,41 @@ button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
 .ar-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:10px;padding:6px 16px 12px 44px}
 .ar-sec[data-open="true"] .ar-grid{animation:ar-fade-in .2s ease both}
 .ar-sec:not([data-open="true"]) .ar-grid{opacity:0;transition:opacity .18s ease}
-.ar-card{position:relative;display:flex;align-items:flex-start;gap:9px;min-width:0;padding:11px 12px;border:.5px solid var(--ar-line);border-radius:10px;background:color-mix(in oklab,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) calc(100% - var(--ar-card-lift)),var(--dsw-alias-label-primary) var(--ar-card-lift));color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px;text-decoration:none;user-select:none;-webkit-touch-callout:none;-webkit-user-drag:none;transition:border-color .16s ease,background-color .16s ease}
+/* The card is a positioning context: a transparent full-card anchor carries the
+   native link behaviour, while the checkbox / trash / confirm layer sit above it
+   as real buttons. Buttons must never be nested inside the anchor. */
+.ar-card{position:relative;display:flex;align-items:flex-start;gap:9px;min-width:0;padding:11px 34px 11px 12px;border:.5px solid var(--ar-line);border-radius:10px;background:color-mix(in oklab,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) calc(100% - var(--ar-card-lift)),var(--dsw-alias-label-primary) var(--ar-card-lift));color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px;user-select:none;-webkit-touch-callout:none;-webkit-user-drag:none;transition:border-color .16s ease,background-color .16s ease}
 /* Card surface = the sidebar fill nudged a fixed step towards the theme's text colour, so any theme (even one whose fill equals its base) keeps a visible card/background delta. Tune it with the --ar-card-lift variables on .ar-root. */
 .ar-card:hover{border-color:var(--dsw-alias-border-l2);background:color-mix(in oklab,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) calc(100% - var(--ar-card-lift-hover)),var(--dsw-alias-label-primary) var(--ar-card-lift-hover))}
-.ar-card:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.ar-card[data-selected="true"]{border-color:var(--dsw-alias-brand-primary);background:color-mix(in oklab,var(--dsw-alias-brand-primary) 9%,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) 91%)}
+.ar-card[data-selected="true"]:hover{border-color:var(--dsw-alias-brand-primary);background:color-mix(in oklab,var(--dsw-alias-brand-primary) 13%,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) 87%)}
+.ar-card__link{position:absolute;inset:0;z-index:0;display:block;border-radius:inherit;text-decoration:none}
+.ar-card__link:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
+.ar-card__lead{position:relative;z-index:1;flex:none;width:18px;height:18px;margin-top:1px;pointer-events:none}
+.ar-card__title{position:relative;z-index:1;min-width:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;pointer-events:none}
+.ar-fav{flex:none;width:18px;height:18px;border-radius:4px;object-fit:contain;transition:opacity .12s ease}
+.ar-fav--letter{display:inline-flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent);color:var(--dsw-alias-label-secondary);font-size:10.5px;font-weight:600;line-height:1}
+.ar-card:hover .ar-fav,.ar-card:focus-within .ar-fav,.ar-card[data-selecting="true"] .ar-fav{opacity:0}
+.ar-card__check{position:absolute;inset:0;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:1.5px solid var(--dsw-alias-label-tertiary);border-radius:4px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary-inverted);cursor:pointer;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .12s ease,visibility 0s linear .12s,border-color .12s ease,background-color .12s ease}
+.ar-card:hover .ar-card__check,.ar-card:focus-within .ar-card__check,.ar-card[data-selecting="true"] .ar-card__check{opacity:1;visibility:visible;pointer-events:auto;transition:opacity .12s ease,visibility 0s,border-color .12s ease,background-color .12s ease}
+.ar-card__check:hover{border-color:var(--dsw-alias-brand-primary)}
+.ar-card__check[data-checked="true"]{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted)}
+.ar-card__check:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.ar-card__check:disabled{cursor:default;opacity:.6}
+.ar-card__trash{position:absolute;top:4px;right:4px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-error);cursor:pointer;opacity:0;pointer-events:none;transition:opacity .12s ease,background-color .12s ease}
+.ar-card:hover .ar-card__trash,.ar-card:focus-within .ar-card__trash{opacity:1;pointer-events:auto}
+.ar-card__trash:hover{background:color-mix(in oklab,var(--dsw-alias-label-error) 14%,transparent)}
+.ar-card__trash:focus-visible{outline:2px solid var(--dsw-alias-label-error);outline-offset:0}
+.ar-card__trash:disabled{cursor:default;opacity:.35}
+.ar-card[data-selecting="true"] .ar-card__trash,.ar-card[data-confirming="true"] .ar-card__trash{display:none}
+.ar-card__confirm{position:absolute;inset:0;z-index:3;display:flex;align-items:center;gap:6px;padding:0 8px;border-radius:inherit;background:color-mix(in oklab,var(--dsw-alias-bg-base) 94%,var(--dsw-alias-label-error) 6%)}
+.ar-card__confirm-text{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:11.5px;font-weight:600;line-height:16px;color:var(--dsw-alias-label-primary)}
+.ar-card__confirm-btn{flex:none;height:22px;padding:0 6px;border:1px solid var(--ar-line-strong);border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11.5px;line-height:20px;cursor:pointer;white-space:nowrap}
+.ar-card__confirm-btn:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ar-card__confirm-btn--danger{border-color:color-mix(in oklab,var(--dsw-alias-label-error) 30%,transparent);background:color-mix(in oklab,var(--dsw-alias-label-error) 12%,transparent);color:var(--dsw-alias-label-error)}
+.ar-card__confirm-btn--danger:hover{background:color-mix(in oklab,var(--dsw-alias-label-error) 18%,transparent);color:var(--dsw-alias-label-error)}
+.ar-card__confirm-btn:disabled{opacity:.55;cursor:default}
+.ar-card__confirm-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 /* Drag feedback: the source keeps a dashed blank box until the pointer leaves
    it; then the box collapses, siblings glide into the gap, a floating copy
    follows the pointer, and a translucent copy previews the target slot. */
@@ -1872,17 +3543,70 @@ button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
 [data-sort-ghost="true"]{position:fixed!important;z-index:1300;margin:0!important;pointer-events:none!important;opacity:.98;box-shadow:0 18px 44px rgba(0,0,0,.28);transition:none!important;will-change:left,top}
 .ar-group[data-sort-ghost="true"],.ar-sec[data-sort-ghost="true"]{background:var(--dsw-alias-bg-base)}
 .ar-root[data-sorting="true"],.ar-root[data-sorting="true"] *{cursor:grabbing!important;user-select:none!important}
-.ar-card__title{min-width:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
-.ar-fav{flex:none;width:18px;height:18px;border-radius:4px;object-fit:contain}
-.ar-fav--letter{display:inline-flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent);color:var(--dsw-alias-label-secondary);font-size:10.5px;font-weight:600;line-height:1}
 .ar-state{display:flex;flex:1;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:56px 24px;color:var(--dsw-alias-label-secondary);font-size:13px;text-align:center}
 .ar-state__title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:600}
 .ar-state__hint{max-width:420px;font-size:12.5px;line-height:18px}
-.ar-toast{position:fixed;z-index:1200;left:50%;bottom:26px;transform:translateX(-50%);max-width:min(560px,calc(100vw - 48px));padding:7px 14px;border:1px solid var(--ar-line);border-radius:999px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);font-size:12.5px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 8px 28px rgba(0,0,0,.2)}
+.ar-toast{position:fixed;z-index:1400;left:50%;bottom:26px;transform:translateX(-50%);max-width:min(560px,calc(100vw - 48px));padding:7px 14px;border:1px solid var(--ar-line);border-radius:999px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);font-size:12.5px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 8px 28px rgba(0,0,0,.2)}
+.ar-root[data-select-mode="true"] .ar-toast,.ar-root[data-dialog-open="true"] .ar-toast{opacity:0;pointer-events:none}
+/* Floating bulk-action dock: the summary stacks above the bar. The dock itself
+   is click-through so the area beside the pill stays usable. */
+.ar-bar-dock{position:absolute;z-index:1100;left:220px;right:0;bottom:16px;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
+.ar-bar{pointer-events:auto;display:flex;align-items:center;gap:8px;max-width:calc(100% - 32px);height:44px;padding:0 8px 0 14px;border:1px solid var(--ar-line-strong);border-radius:999px;background:var(--dsw-alias-bg-overlay);box-shadow:0 12px 32px rgba(0,0,0,.22);animation:ar-bar-in .18s cubic-bezier(.2,.7,.2,1) both}
+.ar-bar__count{min-width:0;max-width:56%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:0 6px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:28px;cursor:pointer;font-variant-numeric:tabular-nums}
+.ar-bar__count:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ar-bar__count:disabled{cursor:default;opacity:.7}
+.ar-bar__actions{display:flex;align-items:center;gap:2px}
+.ar-bar__btn{height:28px;padding:0 9px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:18px;cursor:pointer;white-space:nowrap}
+.ar-bar__btn:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ar-bar__btn--danger{color:var(--dsw-alias-label-error)}
+.ar-bar__btn--danger:hover{background:color-mix(in oklab,var(--dsw-alias-label-error) 12%,transparent);color:var(--dsw-alias-label-error)}
+.ar-bar__btn:disabled{opacity:.45;cursor:default;background:transparent}
+.ar-bar__btn:focus-visible,.ar-bar__count:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.ar-summary{pointer-events:auto;width:min(440px,calc(100% - 32px));max-height:320px;display:flex;flex-direction:column;border:1px solid var(--ar-line-strong);border-radius:12px;background:var(--dsw-alias-bg-overlay);box-shadow:0 18px 44px rgba(0,0,0,.28);overflow:hidden;outline:none;animation:ar-bar-in .16s cubic-bezier(.2,.7,.2,1) both}
+.ar-summary__head{flex:none;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 12px;border-bottom:1px solid var(--ar-line);font-size:12px;font-weight:600}
+.ar-summary__clear{padding:2px 6px;border:0;border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11.5px;cursor:pointer}
+.ar-summary__clear:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ar-summary__body{min-height:0;overflow-y:auto;padding:4px 0}
+.ar-summary__group{padding:4px 0}
+.ar-summary__group-head{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:4px 12px;border:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;font-weight:600;text-align:left;cursor:pointer}
+.ar-summary__group-head:hover{background:var(--dsw-alias-bg-layer-2)}
+.ar-summary__group-count{flex:none;color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:500}
+.ar-summary__list{padding:1px 12px 3px 20px}
+.ar-summary__list-head{padding:2px 0;color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:500}
+.ar-summary__item{display:flex;align-items:center;gap:6px;padding:2px 0}
+.ar-summary__item-title{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:12px;color:var(--dsw-alias-label-primary)}
+.ar-summary__remove{flex:none;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}
+.ar-summary__remove:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ar-summary__remove:focus-visible,.ar-summary__clear:focus-visible,.ar-summary__group-head:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
+.ar-summary__foot{flex:none;display:flex;justify-content:flex-end;padding:6px 10px;border-top:1px solid var(--ar-line)}
+/* Modal shell shares the panel's token language; the scrim covers only the
+   archive panel, not the host shell around it. */
+.ar-modal{position:absolute;inset:0;z-index:1200;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--dsw-alias-bg-mask-2,rgba(0,0,0,.35));animation:ar-fade-in .16s ease both}
+.ar-modal__panel{width:min(420px,100%);max-height:calc(100% - 24px);overflow-y:auto;padding:16px;border:1px solid var(--ar-line-strong);border-radius:12px;background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base));color:var(--dsw-alias-label-primary);box-shadow:0 24px 60px rgba(0,0,0,.32);animation:ar-modal-in .16s cubic-bezier(.2,.7,.2,1) both}
+.ar-modal__title{font-size:14px;line-height:20px;font-weight:600;letter-spacing:-.005em}
+.ar-modal__body{margin-top:10px}
+.ar-modal__note{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:17px}
+.ar-modal__hint{display:flex;flex-direction:column;gap:2px;margin-top:10px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:17px}
+.ar-modal__hint-soft{color:var(--dsw-alias-label-tertiary);font-size:11px}
+.ar-modal__error{margin-top:10px;color:var(--dsw-alias-label-error);font-size:12px;line-height:17px}
+.ar-modal__actions{display:flex;justify-content:flex-end;gap:6px;margin-top:16px}
+.ar-pick-list{list-style:none;max-height:180px;overflow-y:auto;margin:8px 0 0;padding:0;border-top:1px solid var(--ar-line)}
+.ar-pick-list__row{display:flex;flex-direction:column;gap:1px;padding:6px 0;border-bottom:1px solid var(--ar-line)}
+.ar-pick-list__path{color:var(--dsw-alias-label-secondary);font-size:11px;line-height:15px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.ar-pick-list__title{font-size:12px;line-height:17px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.ar-pick-list__more{color:var(--dsw-alias-label-secondary);font-size:11.5px}
+.ar-form__field{display:block;margin-bottom:12px}
+.ar-form__label{display:block;margin-bottom:4px;color:var(--dsw-alias-label-secondary);font-size:11.5px;font-weight:600;letter-spacing:.01em}
+.ar-form__select{width:100%;height:30px;padding:0 6px;border:1px solid var(--ar-line);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;outline:none}
+.ar-form__select:focus{border-color:var(--dsw-alias-brand-primary)}
+.ar-form__select:disabled{opacity:.6}
 @keyframes ar-fade-in{from{opacity:0}}
 @keyframes ar-view-in{from{opacity:0;transform:translateY(var(--ar-shift,6px))}}
+@keyframes ar-bar-in{from{opacity:0;transform:translateY(8px)}}
+@keyframes ar-modal-in{from{opacity:0;transform:translateY(4px) scale(.985)}}
 .ar-toast{animation:ar-fade-in .16s ease both}
-@media (prefers-reduced-motion:reduce){.ar-toast,.ar-view,.ar-sec__body,.ar-sec__chev,.ar-grid,.ar-card{animation:none;transition:none}}`
+@media (max-width:720px){.ar-bar-dock{left:0}.ar-modal{padding:12px}.ar-modal__panel{width:100%}}
+@media (prefers-reduced-motion:reduce){.ar-toast,.ar-view,.ar-sec__body,.ar-sec__chev,.ar-grid,.ar-card,.ar-card__check,.ar-card__trash,.ar-card__confirm,.ar-bar,.ar-summary,.ar-modal,.ar-modal__panel{animation:none;transition:none}}`
 
 module.exports = { CSS }
       },

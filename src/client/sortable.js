@@ -495,6 +495,20 @@ function Sortable({ ids, axis, disabled, className, onReorder, children, ...rest
       if (props.disabled || props.ids.length < 2) return;
       const target = event.target;
       const item = target instanceof Element ? target.closest('[data-sort-id]') : null;
+      const interactive =
+        target instanceof Element
+          ? target.closest('button, input, select, textarea, [data-no-drag]')
+          : null;
+      /* A group row / list head is itself the drag handle; only an action
+         nested inside a card (checkbox, trash, confirm buttons) opts out. */
+      if (
+        interactive !== null &&
+        item !== null &&
+        interactive !== item &&
+        item.contains(interactive)
+      ) {
+        return;
+      }
       if (item === null || item.closest('[data-sort-scope]') !== root) return;
       const sortId = item.getAttribute('data-sort-id');
       const index = sortId === null ? -1 : props.ids.indexOf(sortId);
