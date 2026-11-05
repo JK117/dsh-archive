@@ -1,27 +1,27 @@
 # 资料库（dsh-archive）
 
-DSH 全局面板插件：把浏览器扩展导出的书签集合变成一个两级资料库。左栏是较窄的**一级分组列表**，右栏是当前分组的**可展开 / 收起的二级列表**，展开后是带 favicon 和标题的书签卡片，点击卡片在**系统默认浏览器**中打开链接。
+DSH 全局面板插件：把插件自带的一份书签库渲染成两级资料库。左栏是较窄的**一级分组列表**，右栏是当前分组的**可展开 / 收起的二级列表**，展开后是带 favicon 和标题的书签卡片，点击卡片在**系统默认浏览器**中打开链接。
 
 - 入口：左侧栏顶部面板行（`sidebar.panellist`，Plugins / Scheduled tasks / Travel Plotter 旁边）的**资料库**。
 - 布局：页头（一级标题「资料库」+ 搜索框）→ 主体左右分栏；左栏 `220px`（分组列表 + 底部规模统计），右栏自适应并独立滚动。左右两栏的栏头同高（`40px`）、同一条基线上，列表起点也对齐；右栏的分组标题与下方列表标题文字左边缘对齐（`44px` 栏线）。
 - 字号层级：页头 `18px` ＞ 右栏分组标题 `16px` ＞ 列表标题 `14px` ＞ 左栏分组名 / 卡片 `13px` ＞ 元信息 `12px`。
-- 数据：首次加载即带一份真实导出（`data/bookmarks.json`，13 个分组 / 55 个列表 / 153 个书签）。
+- 数据：首次加载即带一份真实书签库（`data/bookmarks.json`，13 个分组 / 55 个列表 / 153 个书签）。
 - 语言：界面文案走 Client locale，中文 / English 各一份；跟随 DSH 语言设置。
 - 主题：只用 `--dsw-alias-*` 主题 token，明暗主题都跟随宿主。
 
 ## 功能
 
-- **左侧一级列表**：分组名 + 书签数；当前分组用自身色相的 12% 底色加左侧 2px 同色竖条选中（与悬停行的 `bg-layer-2` 区分开），点击切换右栏。导出文件里的 `Import - ` 前缀会被去掉（`Import - CSS` → `CSS`），其余名称原样保留。
+- **左侧一级列表**：分组名 + 书签数；当前分组用自身色相的 12% 底色加左侧 2px 同色竖条选中（与悬停行的 `bg-layer-2` 区分开），点击切换右栏。分组名按数据文件里的 `name` 原样显示。
 - **右侧二级列表**：每个列表是一个可折叠小节，标题行显示展开箭头、列表名和条目数；展开后是卡片网格（`auto-fill`，最小 228px），一行标题最多两行，网格底部留 `12px`，最后一行卡片与下一条分区线之间保持呼吸间距。
-- **拖拽排序**：左栏分组、右栏列表、书签卡片都可以在各自的父级元素内拖动排序。鼠标 / 触控笔移动超过 `24px` 才进入拖动（更小的移动仍按单击处理），无需长按；拖动开始时源位置保留一个虚线空白占位框，元素本身作为浮层跟随鼠标；当光标**完全离开**占位框后，占位框消失，后续元素以 `200ms` 的 FLIP 过渡补位，目标位置插入半透明预览作为落点（拖回原位时也会显示同样的插入预览），松开后浮层消失、真实元素平滑落位。右栏列表在展开状态下按**整个 section**（标题行 + 展开的书签卡片）一起拖动、占位和落位，不会只移动标题。触屏为避免和滚动冲突，仍保留约 `280ms` 的按住判定。快速单击不受影响：列表标题仍然收起 / 展开本栏，卡片仍然在系统浏览器中打开；发生拖动的那一次点击会被吞掉，不会误触。拖到滚动区域上下边缘会自动滚动，`Esc` 取消当前拖动。搜索过滤时列表和卡片的排序暂停（避免在过滤子集里重排完整顺序），分组排序仍可用。顺序保存在本地（`dsh-archive:order:v1`），并用数据指纹校验，覆盖 `data/bookmarks.json` 后旧顺序会自动失效。
+- **拖拽排序**：左栏分组、右栏列表、书签卡片都可以在各自的父级元素内拖动排序。鼠标 / 触控笔移动超过 `24px` 才进入拖动（更小的移动仍按单击处理），无需长按；拖动开始时源位置保留一个虚线空白占位框，元素本身作为浮层跟随鼠标；当光标**完全离开**占位框后，占位框消失，后续元素以 `200ms` 的 FLIP 过渡补位，目标位置插入半透明预览作为落点（拖回原位时也会显示同样的插入预览），松开后浮层消失、真实元素平滑落位。右栏列表在展开状态下按**整个 section**（标题行 + 展开的书签卡片）一起拖动、占位和落位，不会只移动标题。触屏为避免和滚动冲突，仍保留约 `280ms` 的按住判定。快速单击不受影响：列表标题仍然收起 / 展开本栏，卡片仍然在系统浏览器中打开；发生拖动的那一次点击会被吞掉，不会误触。拖到滚动区域上下边缘会自动滚动，`Esc` 取消当前拖动。搜索过滤时列表和卡片的排序暂停（避免在过滤子集里重排完整顺序），分组排序仍可用。顺序保存在本地（`dsh-archive:order:v2`），并用数据指纹校验，覆盖 `data/bookmarks.json` 后旧顺序会自动失效。
 - **标题配色**：每个分组按位置循环取 8 种糖果色（草莓 / 蜜橘 / 芒果 / 薄荷 / 青碧 / 天蓝 / 葡萄 / 兰紫，色相 `20/45/75/150/195/240/285/330`）。左栏分组名用**高饱和**色（`oklch(0.74 0.21)` 混主题前景色，浅色主题对比度约 3.9–4.8）并加粗到 `600`（当前项 `700`）；右栏分组标题复用同一色相，因此和左栏对应行颜色完全一致；列表标题用同色相的低饱和色（`oklch(0.76 0.11)`，对比度约 4.0–4.4），箭头取更淡的一档——靠同色相 + 降饱和表示从属关系。OKLCH 固定感知亮度，明暗主题下都保持可读。
 - **计数位置**：页头只保留标题和搜索框；全局规模（分组 / 列表 / 书签）竖排显示在左栏底部；当前分组的列表 / 书签数（搜索时为命中数）与分组标题同一行、垂直居中。
 - **动效**：切换左栏分组时右栏整体淡入并按方向轻移 6px（`0.26s`，向上切换从上方进入，向下切换从下方进入）；列表展开 / 收起用 `grid-template-rows` 从 `0fr` 过渡到 `1fr` 做高度动画（`0.24s`），卡片随之淡入；`prefers-reduced-motion` 下全部关闭。
 - **分区与分界线（VS Code 方案）**：分区线一律 `1px` 实线、通栏、方角、无外边距，用宿主的两级边框 token 表达层级——页头底边与左右分栏用 `border-l2`（part 边界），栏头底边与列表分区线用 `border-l1`（pane 内分隔）。每个列表上方一条分区线；列表标题与下属卡片之间**不再画线**（展开状态没有下界线）。标题带悬停底色为通栏，不是圆角药丸。
-- **书签卡片**：底色 = `--dsw-specific-sidebar-fill`（缺失时退回 `bg-base`）向主题前景色混一个固定比例，悬停再深一档并换 `border-l2`。比例是 `.ar-root` 上的 `--ar-card-lift` / `--ar-card-lift-hover` 两个变量：浅色 `3%` / `6%`，`body[data-ds-dark-theme]` 下覆盖为 `8%` / `14%`（浅色面在同样混比下看起来更重，所以浅色混得少得多）。因为混的是“背景色 → 文字色”的方向，任何主题（包括第三方主题、或侧栏填充恰好等于背景的主题）下卡片与背景都还能分辨（DSH 内置：浅色约 `#f1f2f3`，1.12:1；深色约 `#292a2b`，1.26:1）。`favIconUrl` 加载成功就显示 favicon，失效或缺失时退化成首字母色块（半透明前景色块）；悬停显示完整标题和 URL。
+- **书签卡片**：底色 = `--dsw-specific-sidebar-fill`（缺失时退回 `bg-base`）向主题前景色混一个固定比例，悬停再深一档并换 `border-l2`。比例是 `.ar-root` 上的 `--ar-card-lift` / `--ar-card-lift-hover` 两个变量：浅色 `3%` / `6%`，`body[data-ds-dark-theme]` 下覆盖为 `8%` / `14%`（浅色面在同样混比下看起来更重，所以浅色混得少得多）。因为混的是“背景色 → 文字色”的方向，任何主题（包括第三方主题、或侧栏填充恰好等于背景的主题）下卡片与背景都还能分辨（DSH 内置：浅色约 `#f1f2f3`，1.12:1；深色约 `#292a2b`，1.26:1）。`icon` 加载成功就显示 favicon，失效或缺失时退化成首字母色块（半透明前景色块）；悬停显示完整标题和 URL。
 - **点击打开外部浏览器**：左键单击走 Host 的 `POST /dsh-archive/open`，由系统打开默认浏览器；`⌘ / Ctrl / Shift / 中键` 单击保留浏览器原生新标签行为，右键可复制链接地址。
 - **搜索**：按标题或 URL 过滤当前分组；搜索时匹配到的列表自动展开、左栏显示每个分组的命中数，无命中的分组淡出。
-- **展开状态记忆**：当前分组和每个列表的收起状态存在 `localStorage`（`dsh-archive:state:v1`），刷新后恢复；拖拽排序另行存在 `dsh-archive:order:v1`。
+- **展开状态记忆**：当前分组和每个列表的收起状态存在 `localStorage`（`dsh-archive:state:v1`），刷新后恢复；拖拽排序另行存在 `dsh-archive:order:v2`。
 - **全部展开 / 收起**：右栏页头右侧的单个切换按钮——当前分组全部展开时显示「全部收起」，否则显示「全部展开」，只作用于当前分组。
 - **滚动稳定性**：右栏（`.ar-main`）用 `scrollbar-gutter: stable` 常驻预留滚动条槽位，展开 / 收起列表导致滚动条出现或消失时，右侧标题、按钮和卡片都不会横向抖动，卡片网格也不会重新分列。
 - 加载失败时给出明确提示和「重试」；打开链接失败时底部弹出一条提示。
@@ -30,34 +30,43 @@ DSH 全局面板插件：把浏览器扩展导出的书签集合变成一个两�
 
 ```text
 dsh-archive/
-├── package.json          # bundle 清单：dsh.bundle.patch + dsh.client
-├── cordis.patch.yml      # 插入 id 为 archive 的插件行
-├── index.js              # Host 半：书签路由 + 外部打开路由
-├── client.js             # Client 半：panel 页面 + 侧栏图标
-├── icon.svg              # 插件图标（资料盒）
-├── locale/{zh,en}.json   # meta.title / meta.description（插件管理页展示）
-└── data/bookmarks.json   # 书签集合（来自浏览器扩展导出）
+├── package.json           # bundle 清单 + build / test 脚本
+├── cordis.patch.yml       # 插入 id 为 archive 的插件行
+├── index.js               # Host 入口：注册两个路由
+├── routes.js              # GET 书签库 / POST 外部打开
+├── lib/
+│   ├── config.js          # 路由路径、数据文件、大小上限
+│   ├── library.js         # 数据文件校验、归一化与计数
+│   ├── http.js            # JSON 响应、同源校验、限长读取
+│   ├── url.js             # 只接受 http(s) URL
+│   └── external.js        # 固定 argv 调系统默认打开器
+├── client.js              # 生成物：单文件 Client bundle（勿直接改）
+├── src/client/            # Client 源码：panel / bookmarks / sortable / storage ...
+├── scripts/
+│   ├── build-client.mjs   # 把 src/client 打包成 client.js
+│   └── smoke.mjs          # 无浏览器冒烟测试
+├── icon.svg               # 插件图标（资料盒）
+├── locale/{zh,en}.json    # meta.title / meta.description（插件管理页展示）
+└── data/bookmarks.json    # 书签库（插件自有格式）
 ```
 
 ## 数据格式
 
-`data/bookmarks.json` 是浏览器扩展导出的原始结构，插件不要求你改写它：
+`data/bookmarks.json` 是插件自己的书签库，不再沿用浏览器扩展的导出结构，也不再包含导入器留下的 `type` / `customTitle` / `description` / `labelIds` / `favIconUrl` 等字段。只保留当前页面用到的层级、标题、链接和图标：
 
 ```json
 {
-  "version": 4,
   "groups": [
     {
-      "name": "Import - CSS",
-      "type": "public",
+      "name": "CSS",
       "lists": [
         {
           "title": "Positioning",
-          "cards": [
+          "bookmarks": [
             {
               "title": "px、em、rem、vw、百分比的区别 - 知乎",
               "url": "https://zhuanlan.zhihu.com/p/337377745",
-              "favIconUrl": "https://static.zhihu.com/heifetz/favicon.ico"
+              "icon": "https://static.zhihu.com/heifetz/favicon.ico"
             }
           ]
         }
@@ -67,7 +76,9 @@ dsh-archive/
 }
 ```
 
-Host 在读取时做一次归一化：`groups[].name` 作为一级标题、`lists[].title` 作为二级标题、`cards[]` 作为卡片；只保留 `http(s)` 链接（`javascript:` / `file:` 等会被丢弃），并生成稳定的 `g{组}-l{列表}` / `c{组}-{列表}-{序号}` id。空的列表和分组会被跳过。
+- 一级分组用 `name`，二级列表用 `title`，卡片用 `bookmarks[]`；`icon` 可省略。
+- `url` 与 `icon` 只接受绝对 `http(s)` 链接（`javascript:` / `file:` / `data:` 会被丢弃）；没有合法 URL 的书签、空列表、空分组会被跳过。
+- 文件里不存 id、计数或统计：Host 读取时生成稳定的 `g0` / `g0-l0` / `g0-l0-b0` id，并派生列表与分组计数、全局统计。
 
 **换一份书签**：直接覆盖 `data/bookmarks.json`，刷新页面即可（Host 每次请求都重新读文件，不做缓存）。想保留旧数据就先备份该文件。
 
@@ -77,7 +88,7 @@ Host 在读取时做一次归一化：`groups[].name` 作为一级标题、`list
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| `GET` | `/dsh-archive/bookmarks` | 返回归一化后的分组 / 列表 / 卡片集合 |
+| `GET` | `/dsh-archive/bookmarks` | 返回归一化后的分组 / 列表 / 书签集合（含派生计数） |
 | `POST` | `/dsh-archive/open` | 请求体 `{ "url": "https://…" }`，交给系统默认浏览器打开 |
 
 `open` 只接受绝对 `http(s)` URL，并通过固定 argv 调用系统打开器（macOS `open`、Windows `cmd /c start ""`、Linux `xdg-open`），不经过 shell，因此页面无法借此执行任意命令。
@@ -92,28 +103,32 @@ Host 在读取时做一次归一化：`groups[].name` 作为一级标题、`list
 # target: <本目录的绝对路径>
 ```
 
-安装后侧栏出现「资料库」图标，点击进入面板。修改 `client.js` 后需要刷新 DSH Web 页面才会加载新的浏览器模块（不是热更新）。
+安装后侧栏出现「资料库」图标，点击进入面板。`client.js` 是构建产物；修改 `src/client/` 后运行 `npm run build:client`，再刷新 DSH Web 页面加载新的浏览器模块（不是热更新）。Host 半（`index.js` / `routes.js` / `lib/`）的改动在 DSH 重启或插件重新加载后生效。
 
 ## 开发
 
-无构建步骤：`index.js` / `client.js` 都是可直接运行的 ESM / 纯 JS，改完刷新页面即可。
+Client 源码按职责拆在 `src/client/`：`index.js` 只做注册，`panel.js` 管页面状态与布局，`bookmarks.js` / `sidebar.js` / `header.js` 是展示组件，`sortable.js` 是拖拽排序，`storage.js` 与 `order.js` 管本地状态和顺序，`styles.js` / `i18n.js` / `api.js` 分别是样式、文案和 Host 调用。DSH 每个插件只加载一个自包含的 `client.js`，因此 `scripts/build-client.mjs` 用零依赖的方式把这些源码模块包进同一个 lazy-CJS bundle：
 
 ```bash
-node --check index.js
-node --check client.js
+npm run build:client   # 重写 client.js
+npm test               # 数据模型、bundle、顺序、存储、路由的冒烟检查
+npm run check          # 构建一致性 + 语法 + 冒烟检查
 ```
 
-自测路由（需要 DSH 正在运行，端口以实际为准）：
+`client.js` 由构建生成，不要直接编辑。宿主侧没有构建步骤，`index.js` / `routes.js` / `lib/*.js` 都是可直接运行的 ESM。
+
+自测路由（需要 DSH 正在运行；端口以实际为准，若页面启用了鉴权还需带上同一会话的凭据）：
 
 ```bash
-curl -s http://127.0.0.1:64993/dsh-archive/bookmarks | head -c 200
+curl -s http://127.0.0.1:54677/dsh-archive/bookmarks | head -c 200
 curl -s -X POST -H 'content-type: application/json' \
   -d '{"url":"https://example.com/"}' \
-  http://127.0.0.1:64993/dsh-archive/open
+  http://127.0.0.1:54677/dsh-archive/open
 ```
 
 ## 已知限制
 
 - 当前只读：能浏览、搜索、打开书签，暂不支持在页面内新增 / 编辑 / 删除书签或导入新文件（换数据靠覆盖 `data/bookmarks.json`）。
-- 书签集合是单份文件；还没有多集合切换。拖拽排序只在浏览器本地保存，不写回 `data/bookmarks.json`，因此换浏览器 / 清空站点数据后会回到导出顺序。
+- 数据格式升级后旧的 `dsh-archive:order:v1` 不再读取，首次打开按文件顺序显示；重新拖动会写入 `v2`。
+- 书签库是单份文件；还没有多集合切换。拖拽排序只在浏览器本地保存，不写回 `data/bookmarks.json`，因此换浏览器 / 清空站点数据后会回到文件顺序。
 - favicon 由各站点直连加载，离线或被墙的站点会退化成首字母块。
