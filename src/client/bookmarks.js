@@ -83,6 +83,9 @@ function BookmarkCard({
   const confirmRef = useRef(null)
   const wasConfirming = useRef(false)
   const [leaving, setLeaving] = useState(false)
+  /* A pointer uncheck hides the box at once, even while the pointer still
+     rests on the card; leaving and hovering again brings it back. */
+  const [suppressCheck, setSuppressCheck] = useState(false)
 
   useEffect(() => {
     if (wasConfirming.current && !confirming && trashRef.current !== null) {
@@ -160,6 +163,11 @@ function BookmarkCard({
     }
   }
 
+  const toggleSelection = (event) => {
+    if (selected && event.detail > 0) setSuppressCheck(true)
+    onToggle(bookmark.id)
+  }
+
   const confirmLabelId = 'ar-confirm-' + bookmark.id
 
   return h(
@@ -171,6 +179,8 @@ function BookmarkCard({
       'data-selected': selected ? 'true' : 'false',
       'data-selecting': selectionMode ? 'true' : 'false',
       'data-confirming': confirming ? 'true' : 'false',
+      'data-suppress-check': suppressCheck && !selected ? 'true' : 'false',
+      onMouseLeave: () => setSuppressCheck(false),
     },
     h('a', {
       className: 'ar-card__link',
@@ -185,7 +195,7 @@ function BookmarkCard({
       onClick: (event) => {
         if (selectionMode) {
           event.preventDefault()
-          onToggle(bookmark.id)
+          toggleSelection(event)
           return
         }
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
@@ -213,7 +223,7 @@ function BookmarkCard({
           onClick: (event) => {
             event.preventDefault()
             event.stopPropagation()
-            onToggle(bookmark.id)
+            toggleSelection(event)
           },
         },
         selected ? h(CheckGlyph, { size: 12 }) : null,

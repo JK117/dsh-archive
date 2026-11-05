@@ -155,6 +155,9 @@ function BookmarkCard({
   const confirmRef = useRef(null)
   const wasConfirming = useRef(false)
   const [leaving, setLeaving] = useState(false)
+  /* A pointer uncheck hides the box at once, even while the pointer still
+     rests on the card; leaving and hovering again brings it back. */
+  const [suppressCheck, setSuppressCheck] = useState(false)
 
   useEffect(() => {
     if (wasConfirming.current && !confirming && trashRef.current !== null) {
@@ -232,6 +235,11 @@ function BookmarkCard({
     }
   }
 
+  const toggleSelection = (event) => {
+    if (selected && event.detail > 0) setSuppressCheck(true)
+    onToggle(bookmark.id)
+  }
+
   const confirmLabelId = 'ar-confirm-' + bookmark.id
 
   return h(
@@ -243,6 +251,8 @@ function BookmarkCard({
       'data-selected': selected ? 'true' : 'false',
       'data-selecting': selectionMode ? 'true' : 'false',
       'data-confirming': confirming ? 'true' : 'false',
+      'data-suppress-check': suppressCheck && !selected ? 'true' : 'false',
+      onMouseLeave: () => setSuppressCheck(false),
     },
     h('a', {
       className: 'ar-card__link',
@@ -257,7 +267,7 @@ function BookmarkCard({
       onClick: (event) => {
         if (selectionMode) {
           event.preventDefault()
-          onToggle(bookmark.id)
+          toggleSelection(event)
           return
         }
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
@@ -285,7 +295,7 @@ function BookmarkCard({
           onClick: (event) => {
             event.preventDefault()
             event.stopPropagation()
-            onToggle(bookmark.id)
+            toggleSelection(event)
           },
         },
         selected ? h(CheckGlyph, { size: 12 }) : null,
@@ -1724,6 +1734,9 @@ function Panel(props) {
 
   const stats = collection?.stats ?? { groups: 0, lists: 0, bookmarks: 0 }
   const canMutate = collection?.capabilities?.mutate === true
+  /* The bottom bar is only useful with a non-empty selection; an empty one
+     leaves the grid in its normal state instead of parking an idle toolbar. */
+  const selectionBarVisible = selectionMode && canMutate && entries.length > 0
 
   const focusLater = useCallback((selectors) => {
     setFocusRequest({ selectors, nonce: Date.now() + Math.random() })
@@ -2017,12 +2030,17 @@ function Panel(props) {
     (bookmarkId) => {
       if (busy || !canMutate) return
       const next = toggleId(selected, bookmarkId)
+      // Unchecking the last card ends selection mode, so the grid returns to
+      // browsing and the bar goes away with it.
+      if (next.size === 0) {
+        exitSelection()
+        return
+      }
       setSelected(next)
       setSelectionMode(true)
       setConfirmingId(null)
-      if (next.size === 0) setSummaryOpen(false)
     },
-    [busy, selected, canMutate],
+    [busy, selected, canMutate, exitSelection],
   )
 
   const selectGroup = useCallback(
@@ -2127,16 +2145,18 @@ function Panel(props) {
     (bookmarkId) => {
       const next = new Set(selected)
       next.delete(bookmarkId)
+      if (next.size === 0) {
+        exitSelection()
+        return
+      }
       setSelected(next)
-      if (next.size === 0) setSummaryOpen(false)
     },
-    [selected],
+    [selected, exitSelection],
   )
 
   const clearSelection = useCallback(() => {
-    setSelected(new Set())
-    setSummaryOpen(false)
-  }, [])
+    exitSelection()
+  }, [exitSelection])
 
   const jumpToGroup = useCallback((groupId) => {
     setActiveGroupId(groupId)
@@ -2416,7 +2436,7 @@ function Panel(props) {
     countText += ' · ' + t('select.hidden', { k: hiddenSelected })
   }
 
-  const dock = selectionMode && canMutate
+  const dock = selectionBarVisible
     ? h(
         'div',
         { className: 'ar-bar-dock', key: 'bar' },
@@ -2516,6 +2536,7 @@ function Panel(props) {
     {
       className: 'ar-root',
       'data-select-mode': selectionMode ? 'true' : 'false',
+      'data-bar-visible': selectionBarVisible ? 'true' : 'false',
       'data-dialog-open': dialog !== null ? 'true' : 'false',
       'data-busy': busy ? 'true' : 'false',
     },
@@ -3467,7 +3488,7 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-group__sel{flex:none;display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted);font-size:10px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
 /* Right column: one band header, then the group's lists. Text sits on the 32px rail used by section titles. */
 .ar-main{flex:1;min-width:0;min-height:0;overflow-x:hidden;overflow-y:auto;scrollbar-gutter:stable;padding:0 0 40px}
-.ar-root[data-select-mode="true"] .ar-main{padding-bottom:90px}
+.ar-root[data-bar-visible="true"] .ar-main{padding-bottom:90px}
 /* A group switch remounts this wrapper (keyed by group id), replaying the entry animation. */
 .ar-view{min-height:100%;display:flex;flex-direction:column;animation:ar-view-in .26s cubic-bezier(.2,.7,.2,1) both}
 .ar-view[data-dir="up"]{--ar-shift:-6px}
@@ -3534,13 +3555,27 @@ button.ar-sec__head:disabled:hover{background:transparent}
 .ar-card__title{position:relative;z-index:1;min-width:0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;pointer-events:none}
 .ar-fav{flex:none;width:18px;height:18px;border-radius:4px;object-fit:contain;transition:opacity .12s ease}
 .ar-fav--letter{display:inline-flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent);color:var(--dsw-alias-label-secondary);font-size:10.5px;font-weight:600;line-height:1}
-.ar-card:hover .ar-fav,.ar-card:focus-within .ar-fav,.ar-card[data-selecting="true"] .ar-fav{opacity:0}
+.ar-card:hover .ar-fav,.ar-card__link:focus-visible ~ .ar-card__lead .ar-fav,.ar-card[data-selected="true"] .ar-fav{opacity:0}
 .ar-card__check{position:absolute;inset:0;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:1.5px solid var(--dsw-alias-label-tertiary);border-radius:4px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary-inverted);cursor:pointer;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .12s ease,visibility 0s linear .12s,border-color .12s ease,background-color .12s ease}
-.ar-card:hover .ar-card__check,.ar-card:focus-within .ar-card__check,.ar-card[data-selecting="true"] .ar-card__check{opacity:1;visibility:visible;pointer-events:auto;transition:opacity .12s ease,visibility 0s,border-color .12s ease,background-color .12s ease}
+.ar-card:hover .ar-card__check,.ar-card__link:focus-visible ~ .ar-card__lead .ar-card__check,.ar-card__check:focus-visible,.ar-card[data-selected="true"] .ar-card__check{opacity:1;visibility:visible;pointer-events:auto;transition:opacity .12s ease,visibility 0s,border-color .12s ease,background-color .12s ease}
+/* Selection mode only changes what a click does. Unselected cards keep their
+   favicon and stay visually identical to the browsing state; their box appears
+   on hover or keyboard focus, while selected cards keep the checked box. The
+   idle box keeps its visibility so Tab can still reach it — the keyboard
+   focus rule above then reveals it. */
+.ar-card[data-selecting="true"] .ar-card__check{visibility:visible}
 .ar-card__check:hover{border-color:var(--dsw-alias-brand-primary)}
 .ar-card__check[data-checked="true"]{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted)}
 .ar-card__check:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
-.ar-card__check:disabled{cursor:default;opacity:.6}
+.ar-card__check:disabled{cursor:default}
+/* Dim a disabled box only where it is actually revealed; a bare :disabled
+   opacity would otherwise paint every idle box during a save. */
+.ar-card:hover .ar-card__check:disabled,.ar-card[data-selected="true"] .ar-card__check:disabled{opacity:.6}
+/* Unchecking with the pointer puts the box away at once, even while the
+   pointer still rests on the card; leaving and hovering again brings it back.
+   Keyboard focus still wins, so a focused box never hides from the keyboard. */
+.ar-card[data-suppress-check="true"]:hover .ar-card__check:not(:focus-visible){opacity:0;pointer-events:none}
+.ar-card[data-suppress-check="true"]:hover .ar-fav{opacity:1}
 .ar-card__trash{position:absolute;top:50%;right:4px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--ar-danger);cursor:pointer;opacity:0;pointer-events:none;transform:translateY(-50%);transition:opacity .12s ease,background-color .12s ease}
 .ar-card:hover .ar-card__trash,.ar-card:focus-within .ar-card__trash{opacity:1;pointer-events:auto}
 .ar-card__trash:hover{background:color-mix(in oklab,var(--ar-danger) 14%,transparent)}

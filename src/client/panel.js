@@ -239,6 +239,9 @@ function Panel(props) {
 
   const stats = collection?.stats ?? { groups: 0, lists: 0, bookmarks: 0 }
   const canMutate = collection?.capabilities?.mutate === true
+  /* The bottom bar is only useful with a non-empty selection; an empty one
+     leaves the grid in its normal state instead of parking an idle toolbar. */
+  const selectionBarVisible = selectionMode && canMutate && entries.length > 0
 
   const focusLater = useCallback((selectors) => {
     setFocusRequest({ selectors, nonce: Date.now() + Math.random() })
@@ -532,12 +535,17 @@ function Panel(props) {
     (bookmarkId) => {
       if (busy || !canMutate) return
       const next = toggleId(selected, bookmarkId)
+      // Unchecking the last card ends selection mode, so the grid returns to
+      // browsing and the bar goes away with it.
+      if (next.size === 0) {
+        exitSelection()
+        return
+      }
       setSelected(next)
       setSelectionMode(true)
       setConfirmingId(null)
-      if (next.size === 0) setSummaryOpen(false)
     },
-    [busy, selected, canMutate],
+    [busy, selected, canMutate, exitSelection],
   )
 
   const selectGroup = useCallback(
@@ -642,16 +650,18 @@ function Panel(props) {
     (bookmarkId) => {
       const next = new Set(selected)
       next.delete(bookmarkId)
+      if (next.size === 0) {
+        exitSelection()
+        return
+      }
       setSelected(next)
-      if (next.size === 0) setSummaryOpen(false)
     },
-    [selected],
+    [selected, exitSelection],
   )
 
   const clearSelection = useCallback(() => {
-    setSelected(new Set())
-    setSummaryOpen(false)
-  }, [])
+    exitSelection()
+  }, [exitSelection])
 
   const jumpToGroup = useCallback((groupId) => {
     setActiveGroupId(groupId)
@@ -931,7 +941,7 @@ function Panel(props) {
     countText += ' · ' + t('select.hidden', { k: hiddenSelected })
   }
 
-  const dock = selectionMode && canMutate
+  const dock = selectionBarVisible
     ? h(
         'div',
         { className: 'ar-bar-dock', key: 'bar' },
@@ -1031,6 +1041,7 @@ function Panel(props) {
     {
       className: 'ar-root',
       'data-select-mode': selectionMode ? 'true' : 'false',
+      'data-bar-visible': selectionBarVisible ? 'true' : 'false',
       'data-dialog-open': dialog !== null ? 'true' : 'false',
       'data-busy': busy ? 'true' : 'false',
     },
