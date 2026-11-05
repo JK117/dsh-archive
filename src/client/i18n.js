@@ -38,7 +38,7 @@ const zh = {
 
   'delete.cardTitle': '删除这个书签？',
   'delete.cardAria': '删除「{title}」',
-  'delete.cardConfirm': '确认删除',
+  'delete.cardConfirm': '删除',
   'delete.batchTitle': '删除 {n} 个书签？',
   'delete.irreversible': '删除后不可恢复。',
   'delete.moreItems': '等 {n} 项',

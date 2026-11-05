@@ -197,6 +197,20 @@ async function testClientBundle() {
   assert.equal(sidebar[2], 'archive')
 }
 
+async function testStyles() {
+  const { CSS } = requireFromSource('./styles.js')
+  // A typo in a theme token silently falls back to the inherited colour, which
+  // is how the delete actions once lost their red. Guard the semantic token.
+  assert.match(CSS, /--ar-danger:var\(--dsw-alias-state-error-primary\)/)
+  assert.doesNotMatch(CSS, /--dsw-alias-label-error/)
+  // Card layout: three title lines, and one centred row for favicon / checkbox / trash.
+  assert.match(CSS, /\.ar-card\{[^}]*align-items:center/)
+  assert.match(CSS, /\.ar-card\{[^}]*min-height:76px/)
+  assert.match(CSS, /\.ar-card__title\{[^}]*-webkit-line-clamp:3/)
+  assert.match(CSS, /\.ar-card__trash\{[^}]*top:50%/)
+  assert.match(CSS, /\.ar-card__trash\{[^}]*translateY\(-50%\)/)
+}
+
 async function testOrderHelpers() {
   const { applyOrder, moveId, collectionSignature, pruneOrder } = requireFromSource('./order.js')
 
@@ -548,6 +562,7 @@ await test('empty structures', testEmptyStructures)
 await test('stable ids', testStableIds)
 await test('mutations', testMutations)
 await test('client bundle', testClientBundle)
+await test('styles', testStyles)
 await test('order helpers', testOrderHelpers)
 await test('selection helpers', testSelectionHelpers)
 await test('local storage', testStorage)

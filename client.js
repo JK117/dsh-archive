@@ -77,6 +77,18 @@ const { useState, useEffect, useRef } = React
 const { Chevron, CheckGlyph, TrashGlyph } = require('./glyphs.js')
 const { Sortable } = require('./sortable.js')
 
+/** Keep in sync with the .16s exit animation in styles.js; 20ms covers a frame. */
+const CONFIRM_EXIT_MS = 180
+
+/** Mirrors the CSS reduced-motion query so cancel can skip the exit delay too. */
+function prefersReducedMotion() {
+  return (
+    typeof window !== 'undefined' &&
+    window.matchMedia !== undefined &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches === true
+  )
+}
+
 /** The single letter a favicon-less bookmark shows in its 18px tile. */
 function letterFor(bookmark) {
   try {
@@ -142,6 +154,7 @@ function BookmarkCard({
   const cancelRef = useRef(null)
   const confirmRef = useRef(null)
   const wasConfirming = useRef(false)
+  const [leaving, setLeaving] = useState(false)
 
   useEffect(() => {
     if (wasConfirming.current && !confirming && trashRef.current !== null) {
@@ -155,6 +168,18 @@ function BookmarkCard({
     return undefined
   }, [confirming])
 
+  // A cancel click keeps the overlay mounted for its reverse animation, then
+  // tells the panel to clear the confirming card.
+  useEffect(() => {
+    if (!leaving) return undefined
+    const timer = setTimeout(() => onCancelDelete(bookmark.id), CONFIRM_EXIT_MS)
+    return () => clearTimeout(timer)
+  }, [leaving, onCancelDelete, bookmark.id])
+
+  useEffect(() => {
+    if (!confirming) setLeaving(false)
+  }, [confirming])
+
   useEffect(() => {
     if (confirming && cancelRef.current !== null) cancelRef.current.focus()
   }, [confirming])
@@ -164,7 +189,7 @@ function BookmarkCard({
     const onPointerDown = (event) => {
       if (deleteBusy) return
       if (cardRef.current !== null && !cardRef.current.contains(event.target)) {
-        onCancelDelete()
+        onCancelDelete(bookmark.id)
       }
     }
     document.addEventListener('pointerdown', onPointerDown, true)
@@ -176,23 +201,34 @@ function BookmarkCard({
     const onKeyDown = (event) => {
       if (event.key !== 'Escape') return
       event.preventDefault()
-      if (!deleteBusy) onCancelDelete()
+      if (!deleteBusy) onCancelDelete(bookmark.id)
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [confirming, deleteBusy, onCancelDelete])
+
+  const requestCancel = () => {
+    if (leaving || deleteBusy) return
+    if (prefersReducedMotion()) {
+      onCancelDelete(bookmark.id)
+      return
+    }
+    setLeaving(true)
+  }
 
   const onConfirmKeyDown = (event) => {
     if (event.key !== 'Tab') return
     const cancel = cancelRef.current
     const confirm = confirmRef.current
     if (cancel === null || confirm === null) return
-    if (event.shiftKey && document.activeElement === cancel) {
-      event.preventDefault()
-      confirm.focus()
-    } else if (!event.shiftKey && document.activeElement === confirm) {
+    // Delete now comes first in the row, so the Tab loop runs delete -> cancel
+    // and wraps from cancel back to delete.
+    if (event.shiftKey && document.activeElement === confirm) {
       event.preventDefault()
       cancel.focus()
+    } else if (!event.shiftKey && document.activeElement === cancel) {
+      event.preventDefault()
+      confirm.focus()
     }
   }
 
@@ -252,7 +288,7 @@ function BookmarkCard({
             onToggle(bookmark.id)
           },
         },
-        selected ? h(CheckGlyph, { size: 11 }) : null,
+        selected ? h(CheckGlyph, { size: 12 }) : null,
       ) : null,
     ),
     h('span', { className: 'ar-card__title', 'aria-hidden': 'true' }, bookmark.title),
@@ -284,39 +320,45 @@ function BookmarkCard({
             role: 'dialog',
             'aria-labelledby': confirmLabelId,
             'data-no-drag': '1',
+            'data-leaving': leaving ? 'true' : 'false',
             onClick: (event) => event.stopPropagation(),
             onKeyDown: onConfirmKeyDown,
           },
           h('span', { className: 'ar-card__confirm-text', id: confirmLabelId }, t('delete.cardTitle')),
           h(
-            'button',
-            {
-              type: 'button',
-              className: 'ar-card__confirm-btn',
-              ref: cancelRef,
-              disabled: deleteBusy === true,
-              onClick: (event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                onCancelDelete()
+            'div',
+            { className: 'ar-card__confirm-actions' },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'ar-card__confirm-btn ar-card__confirm-btn--danger',
+                ref: confirmRef,
+                disabled: deleteBusy === true,
+                onClick: (event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  if (leaving) return
+                  onConfirmDelete()
+                },
               },
-            },
-            t('cancel'),
-          ),
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'ar-card__confirm-btn ar-card__confirm-btn--danger',
-              ref: confirmRef,
-              disabled: deleteBusy === true,
-              onClick: (event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                onConfirmDelete()
+              deleteBusy === true ? t('delete.busy') : t('delete.cardConfirm'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'ar-card__confirm-btn',
+                ref: cancelRef,
+                disabled: deleteBusy === true,
+                onClick: (event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  requestCancel()
+                },
               },
-            },
-            deleteBusy === true ? t('delete.busy') : t('delete.cardConfirm'),
+              t('cancel'),
+            ),
           ),
         )
       : null,
@@ -349,8 +391,8 @@ function ListSection({
   onReorderBookmarks,
 }) {
   const inner = [
-    h(Chevron, { key: 'chev', open }),
     h('span', { key: 'title', className: 'ar-sec__title' }, list.title),
+    h(Chevron, { key: 'chev', open }),
     h('span', { key: 'count', className: 'ar-sec__count' }, list.count),
   ]
   const sortAttrs = {
@@ -540,7 +582,7 @@ function focusablesIn(panel) {
 }
 
 /** A centered modal with a scrim, focus trap, Escape, and outside-click. */
-function Modal({ title, children, footer, onCancel, busy, initialFocusRef, width }) {
+function Modal({ title, children, footer, onCancel, busy, initialFocusRef, width, tone }) {
   const panelRef = useRef(null)
 
   useEffect(() => {
@@ -584,6 +626,7 @@ function Modal({ title, children, footer, onCancel, busy, initialFocusRef, width
       'div',
       {
         className: 'ar-modal__panel',
+        'data-tone': tone,
         role: 'dialog',
         'aria-modal': 'true',
         'aria-label': title,
@@ -608,6 +651,7 @@ function BatchDeleteDialog({ t, entries, busy, error, onCancel, onConfirm }) {
     Modal,
     {
       title,
+      tone: 'danger',
       onCancel,
       busy,
       initialFocusRef: cancelRef,
@@ -913,7 +957,7 @@ function SelectionSummary({ t, entries, onRemove, onClear, onJump, onClose }) {
                       title: t('select.remove', { title: entry.bookmark.title }),
                       onClick: () => onRemove(entry.bookmark.id),
                     },
-                    h(CloseGlyph, { size: 10 }),
+                    h(CloseGlyph, { size: 12 }),
                   ),
                 ),
               ),
@@ -933,30 +977,48 @@ function SelectionSummary({ t, entries, onRemove, onClear, onJump, onClose }) {
 module.exports = { Modal, BatchDeleteDialog, MoveDialog, SelectionSummary }
       },
 "./glyphs.js": function (module, exports, require) {
-/** Small inline SVGs shared by the sidebar row and the panel. */
+/**
+ * Inline icons taken from the host's 16×16 outline set
+ * (`@deepseek-ai/dsh-client-ui-primitives`): Regular weight, 1px stroke.
+ * The path data is copied locally instead of importing the Host package so the
+ * plugin bundle stays self-contained, but the geometry, weight and sizes follow
+ * the host UI. Native names: archive-outline, chevron-right-outline,
+ * search-outline, trash-outline, check-outline, close-outline.
+ */
 const React = require('react')
 const h = React.createElement
 
-/** The archive-box glyph, shared by the sidebar row and the page header. */
-function ArchiveGlyph({ size, strokeWidth }) {
+/** The shared 16×16 outline frame used by every glyph below. */
+function Glyph({ size, strokeWidth, children }) {
   return h(
     'svg',
     {
       width: size,
       height: size,
-      viewBox: '0 0 24 24',
+      viewBox: '0 0 16 16',
       fill: 'none',
       stroke: 'currentColor',
-      strokeWidth: strokeWidth === undefined ? 1.7 : strokeWidth,
-      strokeLinecap: 'round',
-      strokeLinejoin: 'round',
+      strokeWidth: strokeWidth === undefined ? 1 : strokeWidth,
       'aria-hidden': 'true',
       focusable: 'false',
       style: { display: 'block' },
     },
-    h('rect', { x: 3, y: 3.8, width: 18, height: 4.6, rx: 1.2 }),
-    h('path', { d: 'M4.6 8.4v9.5c0 1 .8 1.8 1.8 1.8h11.2c1 0 1.8-.8 1.8-1.8V8.4' }),
-    h('path', { d: 'M9.9 12.6h4.2' }),
+    children,
+  )
+}
+
+/** The archive-box glyph, shared by the sidebar row and the page header. */
+function ArchiveGlyph({ size, strokeWidth }) {
+  return h(
+    Glyph,
+    { size: size === undefined ? 20 : size, strokeWidth },
+    h('path', {
+      d: 'M13.5 2.5H2.5C1.94772 2.5 1.5 2.94772 1.5 3.5V4.5C1.5 5.05228 1.94772 5.5 2.5 5.5H13.5C14.0523 5.5 14.5 5.05228 14.5 4.5V3.5C14.5 2.94772 14.0523 2.5 13.5 2.5Z',
+    }),
+    h('path', {
+      d: 'M2.5 5.5V13.5C2.5 13.7652 2.60536 14.0196 2.79289 14.2071C2.98043 14.3946 3.23478 14.5 3.5 14.5H12.5C12.7652 14.5 13.0196 14.3946 13.2071 14.2071C13.3946 14.0196 13.5 13.7652 13.5 13.5V5.5',
+    }),
+    h('path', { d: 'M6.5 9.5H9.5' }),
   )
 }
 
@@ -966,20 +1028,11 @@ function Chevron({ open }) {
     'span',
     { className: 'ar-sec__chev' },
     h(
-      'svg',
-      {
-        width: 12,
-        height: 12,
-        viewBox: '0 0 12 12',
-        fill: 'none',
-        stroke: 'currentColor',
-        strokeWidth: 1.6,
-        strokeLinecap: 'round',
-        strokeLinejoin: 'round',
-        'aria-hidden': 'true',
-        focusable: 'false',
-      },
-      h('path', { d: 'M4.5 2.5 8 6l-3.5 3.5' }),
+      Glyph,
+      { size: 14 },
+      h('path', {
+        d: 'M6 12L9.29289 8.70711C9.68342 8.31658 9.68342 7.68342 9.29289 7.29289L6 4',
+      }),
     ),
   )
 }
@@ -987,87 +1040,55 @@ function Chevron({ open }) {
 /** The page-header search glyph. */
 function SearchGlyph() {
   return h(
-    'svg',
-    {
-      width: 13,
-      height: 13,
-      viewBox: '0 0 16 16',
-      fill: 'none',
-      stroke: 'currentColor',
-      strokeWidth: 1.5,
-      strokeLinecap: 'round',
-      'aria-hidden': 'true',
-      focusable: 'false',
-    },
-    h('circle', { cx: 7, cy: 7, r: 4.4 }),
-    h('path', { d: 'm10.4 10.4 3 3' }),
+    Glyph,
+    { size: 14 },
+    h('path', {
+      d: 'M6.58727 11.8586C9.55061 11.8586 11.9529 9.45637 11.9529 6.49304C11.9529 3.5297 9.55061 1.12744 6.58727 1.12744C3.62394 1.12744 1.22168 3.5297 1.22168 6.49304C1.22168 9.45637 3.62394 11.8586 6.58727 11.8586Z',
+    }),
+    h('path', { d: 'M10.2991 10.3933L14.7783 14.8725' }),
   )
 }
 
-/** The sidebar row: a 20px glyph that thickens while its panel is open. */
+/** The sidebar row: a 20px native archive glyph that thickens while open. */
 function PanelIcon({ size, active }) {
-  return h(ArchiveGlyph, { size, strokeWidth: active ? 1.9 : 1.7 })
+  return h(ArchiveGlyph, { size, strokeWidth: active ? 1.3 : 1 })
 }
 
 /** The card's delete affordance. */
 function TrashGlyph({ size }) {
   return h(
-    'svg',
-    {
-      width: size === undefined ? 14 : size,
-      height: size === undefined ? 14 : size,
-      viewBox: '0 0 16 16',
-      fill: 'none',
-      stroke: 'currentColor',
-      strokeWidth: 1.5,
-      strokeLinecap: 'round',
-      strokeLinejoin: 'round',
-      'aria-hidden': 'true',
-      focusable: 'false',
-    },
-    h('path', { d: 'M2.6 4.2h10.8' }),
-    h('path', { d: 'M5.2 4.2V3.1c0-.5.4-.9.9-.9h3.8c.5 0 .9.4.9.9v1.1' }),
-    h('path', { d: 'M4.1 4.2l.6 8.1c0 .5.4.9.9.9h4.8c.5 0 .9-.4.9-.9l.6-8.1' }),
-    h('path', { d: 'M6.7 6.8v3.9M9.3 6.8v3.9' }),
+    Glyph,
+    { size: size === undefined ? 14 : size },
+    h('path', { d: 'M1.28149 3.88831H14.7187' }),
+    h('path', {
+      d: 'M5.41602 3.88833V2.47962C5.41602 2.29282 5.52492 2.11366 5.71876 1.98157C5.9126 1.84948 6.17551 1.77527 6.44964 1.77527H9.55053C9.82466 1.77527 10.0876 1.84948 10.2814 1.98157C10.4753 2.11366 10.5842 2.29282 10.5842 2.47962V3.88833',
+    }),
+    h('path', {
+      d: 'M2.57349 3.88831L3.19366 13.2943C3.21937 13.5502 3.33952 13.7872 3.53065 13.9593C3.72178 14.1313 3.97016 14.2259 4.22729 14.2246H11.7728C12.0299 14.2259 12.2783 14.1313 12.4694 13.9593C12.6605 13.7872 12.7807 13.5502 12.8064 13.2943L13.4266 3.88831',
+    }),
+    h('path', { d: 'M6.44946 6.98926V11.1238' }),
+    h('path', { d: 'M9.55054 6.98926V11.1238' }),
   )
 }
 
 /** The checkmark inside the selection box. */
 function CheckGlyph({ size }) {
   return h(
-    'svg',
-    {
-      width: size === undefined ? 11 : size,
-      height: size === undefined ? 11 : size,
-      viewBox: '0 0 12 12',
-      fill: 'none',
-      stroke: 'currentColor',
-      strokeWidth: 1.9,
-      strokeLinecap: 'round',
-      strokeLinejoin: 'round',
-      'aria-hidden': 'true',
-      focusable: 'false',
-    },
-    h('path', { d: 'M2.2 6.2 4.9 8.9 9.8 3.6' }),
+    Glyph,
+    { size: size === undefined ? 12 : size },
+    h('path', {
+      d: 'M2.25 8.5L5.49732 11.7473C5.90519 12.1552 6.57263 12.1344 6.95426 11.7018L13.75 4',
+    }),
   )
 }
 
 /** Small close mark for summary rows. */
 function CloseGlyph({ size }) {
   return h(
-    'svg',
-    {
-      width: size === undefined ? 11 : size,
-      height: size === undefined ? 11 : size,
-      viewBox: '0 0 12 12',
-      fill: 'none',
-      stroke: 'currentColor',
-      strokeWidth: 1.6,
-      strokeLinecap: 'round',
-      'aria-hidden': 'true',
-      focusable: 'false',
-    },
-    h('path', { d: 'M3 3l6 6M9 3 3 9' }),
+    Glyph,
+    { size: size === undefined ? 12 : size },
+    h('path', { d: 'M2.5 2.5L13.5 13.5' }),
+    h('path', { d: 'M13.5 2.5L2.5 13.5' }),
   )
 }
 
@@ -1151,7 +1172,7 @@ const zh = {
 
   'delete.cardTitle': '删除这个书签？',
   'delete.cardAria': '删除「{title}」',
-  'delete.cardConfirm': '确认删除',
+  'delete.cardConfirm': '删除',
   'delete.batchTitle': '删除 {n} 个书签？',
   'delete.irreversible': '删除后不可恢复。',
   'delete.moreItems': '等 {n} 项',
@@ -1829,9 +1850,11 @@ function Panel(props) {
     void deleteOne(confirmingId)
   }, [confirmingId, deleteOne])
 
-  const cancelDeleteCard = useCallback(() => {
+  const cancelDeleteCard = useCallback((bookmarkId) => {
     if (busy) return
-    setConfirmingId(null)
+    // The card animates its confirm overlay out before calling back, so a
+    // delayed cancel from an old card must not close a newer card's overlay.
+    setConfirmingId((current) => (bookmarkId === undefined || current === bookmarkId ? null : current))
   }, [busy])
 
   const requestDeleteCard = useCallback(
@@ -3404,7 +3427,7 @@ module.exports = {
  * Dividers derive their weight from the theme tokens as well; one soft shadow
  * is the only literal colour, matching the other plugin panels.
  */
-const CSS = `.ar-root{position:relative;box-sizing:border-box;display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;padding-top:var(--dsh-frame-top-clearance,0px);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;--ar-line:var(--dsw-alias-border-l1);--ar-line-strong:var(--dsw-alias-border-l2);--ar-card-lift:3%;--ar-card-lift-hover:6%}
+const CSS = `.ar-root{position:relative;box-sizing:border-box;display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;padding-top:var(--dsh-frame-top-clearance,0px);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;--ar-line:var(--dsw-alias-border-l1);--ar-line-strong:var(--dsw-alias-border-l2);--ar-card-lift:3%;--ar-card-lift-hover:6%;--ar-danger:var(--dsw-alias-state-error-primary)}
 /* Light surfaces read darker than dark ones at the same mix step, so the light theme lifts much less. The host flags dark mode on <body>. */
 body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-root *,.ar-root *::before,.ar-root *::after{box-sizing:border-box}
@@ -3442,14 +3465,14 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-group[data-active="true"] .ar-group__name{font-weight:700}
 .ar-group__count{flex:none;font-size:11.5px;font-variant-numeric:tabular-nums;opacity:.85}
 .ar-group__sel{flex:none;display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted);font-size:10px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
-/* Right column: one band header, then the group's lists. Text sits on the 44px rail used by section titles. */
+/* Right column: one band header, then the group's lists. Text sits on the 32px rail used by section titles. */
 .ar-main{flex:1;min-width:0;min-height:0;overflow-x:hidden;overflow-y:auto;scrollbar-gutter:stable;padding:0 0 40px}
 .ar-root[data-select-mode="true"] .ar-main{padding-bottom:90px}
 /* A group switch remounts this wrapper (keyed by group id), replaying the entry animation. */
 .ar-view{min-height:100%;display:flex;flex-direction:column;animation:ar-view-in .26s cubic-bezier(.2,.7,.2,1) both}
 .ar-view[data-dir="up"]{--ar-shift:-6px}
 .ar-view[data-dir="down"]{--ar-shift:6px}
-.ar-main__head{flex:none;display:flex;align-items:center;gap:12px;height:40px;padding:0 16px 0 44px;border-bottom:1px solid var(--ar-line)}
+.ar-main__head{flex:none;display:flex;align-items:center;gap:12px;height:40px;padding:0 16px 0 32px;border-bottom:1px solid var(--ar-line)}
 .ar-main__titles{flex:1;min-width:0;display:flex;align-items:center;gap:8px}
 .ar-main__title{flex:0 1 auto;min-width:0;margin:0;font-size:16px;line-height:22px;font-weight:600;letter-spacing:-.005em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ar-group-ink,var(--dsw-alias-label-primary));outline:none}
 .ar-main__meta{flex:none;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -3459,14 +3482,14 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-btn:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
 .ar-btn:disabled{opacity:.5;cursor:default}
 .ar-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
-.ar-btn--danger{border-color:color-mix(in oklab,var(--dsw-alias-label-error) 30%,transparent);background:color-mix(in oklab,var(--dsw-alias-label-error) 10%,transparent);color:var(--dsw-alias-label-error)}
-.ar-btn--danger:hover{background:color-mix(in oklab,var(--dsw-alias-label-error) 16%,transparent);color:var(--dsw-alias-label-error)}
+.ar-btn--danger{border-color:color-mix(in oklab,var(--ar-danger) 30%,transparent);background:color-mix(in oklab,var(--ar-danger) 10%,transparent);color:var(--ar-danger)}
+.ar-btn--danger:hover{background:color-mix(in oklab,var(--ar-danger) 16%,transparent);color:var(--ar-danger)}
 .ar-btn--primary{border-color:transparent;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted)}
 .ar-btn--primary:hover{background:color-mix(in oklab,var(--dsw-alias-brand-primary) 86%,var(--dsw-alias-label-primary) 14%);color:var(--dsw-alias-label-primary-inverted)}
 .ar-sections{flex:1 0 auto;display:flex;flex-direction:column;padding:6px 0 0}
 .ar-sections>.ar-sec{border-top:1px solid var(--ar-line)}
 .ar-sections>.ar-sec:first-child{border-top:0}
-.ar-sec__head{position:relative;display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 16px 0 24px;border:0;border-radius:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;font-weight:600;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none}
+.ar-sec__head{position:relative;display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 16px 0 32px;border:0;border-radius:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;font-weight:600;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none}
 button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
 .ar-sec__head[data-static="true"]{cursor:default}
 button.ar-sec__head:disabled{cursor:default}
@@ -3474,13 +3497,13 @@ button.ar-sec__head:disabled:hover{background:transparent}
 .ar-sec__head:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
 .ar-sec__chev{flex:none;display:inline-flex;align-items:center;color:var(--ar-list-ink-soft,var(--dsw-alias-label-secondary));transition:transform .16s ease}
 .ar-sec[data-open="true"] .ar-sec__chev{transform:rotate(90deg)}
-.ar-sec__title{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--ar-list-ink,var(--dsw-alias-label-primary))}
-.ar-sec__count{flex:none;font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+.ar-sec__title{flex:0 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--ar-list-ink,var(--dsw-alias-label-primary))}
+.ar-sec__count{flex:none;margin-left:auto;font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
 /* The card body stays mounted and animates its row from 0fr to 1fr, so both open and close have a height transition; visibility keeps collapsed cards out of the tab order. */
 .ar-sec__body{display:grid;grid-template-rows:0fr;visibility:hidden;transition:grid-template-rows .24s cubic-bezier(.2,.7,.2,1),visibility 0s linear .24s}
 .ar-sec[data-open="true"] .ar-sec__body{grid-template-rows:1fr;visibility:visible;transition:grid-template-rows .24s cubic-bezier(.2,.7,.2,1),visibility 0s}
 .ar-sec__inner{min-height:0;overflow:hidden}
-.ar-sec__empty{padding:8px 16px 12px 44px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.ar-sec__empty{padding:8px 16px 12px 32px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
 /* One candy hue per group, cycling. The group title takes the saturated ink, its lists take a
    desaturated ink of the same hue, so colour alone shows the parent/child relation. OKLCH fixes the
    perceived lightness across hues; mixing with the theme's primary label keeps both themes readable. */
@@ -3493,21 +3516,22 @@ button.ar-sec__head:disabled:hover{background:transparent}
 .ar-root [data-tone="5"]{--ar-hue:240}
 .ar-root [data-tone="6"]{--ar-hue:285}
 .ar-root [data-tone="7"]{--ar-hue:330}
-.ar-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:10px;padding:6px 16px 12px 44px}
+.ar-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:10px;padding:6px 16px 12px 32px}
 .ar-sec[data-open="true"] .ar-grid{animation:ar-fade-in .2s ease both}
 .ar-sec:not([data-open="true"]) .ar-grid{opacity:0;transition:opacity .18s ease}
 /* The card is a positioning context: a transparent full-card anchor carries the
    native link behaviour, while the checkbox / trash / confirm layer sit above it
    as real buttons. Buttons must never be nested inside the anchor. */
-.ar-card{position:relative;display:flex;align-items:flex-start;gap:9px;min-width:0;padding:11px 34px 11px 12px;border:.5px solid var(--ar-line);border-radius:10px;background:color-mix(in oklab,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) calc(100% - var(--ar-card-lift)),var(--dsw-alias-label-primary) var(--ar-card-lift));color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px;user-select:none;-webkit-touch-callout:none;-webkit-user-drag:none;transition:border-color .16s ease,background-color .16s ease}
+.ar-card{position:relative;display:flex;align-items:center;gap:9px;min-width:0;min-height:76px;padding:11px 34px 11px 12px;border:.5px solid var(--ar-line);border-radius:10px;background:color-mix(in oklab,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) calc(100% - var(--ar-card-lift)),var(--dsw-alias-label-primary) var(--ar-card-lift));color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px;user-select:none;-webkit-touch-callout:none;-webkit-user-drag:none;transition:border-color .16s ease,background-color .16s ease}
 /* Card surface = the sidebar fill nudged a fixed step towards the theme's text colour, so any theme (even one whose fill equals its base) keeps a visible card/background delta. Tune it with the --ar-card-lift variables on .ar-root. */
 .ar-card:hover{border-color:var(--dsw-alias-border-l2);background:color-mix(in oklab,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) calc(100% - var(--ar-card-lift-hover)),var(--dsw-alias-label-primary) var(--ar-card-lift-hover))}
 .ar-card[data-selected="true"]{border-color:var(--dsw-alias-brand-primary);background:color-mix(in oklab,var(--dsw-alias-brand-primary) 9%,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) 91%)}
 .ar-card[data-selected="true"]:hover{border-color:var(--dsw-alias-brand-primary);background:color-mix(in oklab,var(--dsw-alias-brand-primary) 13%,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) 87%)}
 .ar-card__link{position:absolute;inset:0;z-index:0;display:block;border-radius:inherit;text-decoration:none}
 .ar-card__link:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
-.ar-card__lead{position:relative;z-index:1;flex:none;width:18px;height:18px;margin-top:1px;pointer-events:none}
-.ar-card__title{position:relative;z-index:1;min-width:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;pointer-events:none}
+.ar-card[data-confirming="true"] .ar-card__link{pointer-events:none}
+.ar-card__lead{position:relative;z-index:1;flex:none;width:18px;height:18px;pointer-events:none}
+.ar-card__title{position:relative;z-index:1;min-width:0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;pointer-events:none}
 .ar-fav{flex:none;width:18px;height:18px;border-radius:4px;object-fit:contain;transition:opacity .12s ease}
 .ar-fav--letter{display:inline-flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent);color:var(--dsw-alias-label-secondary);font-size:10.5px;font-weight:600;line-height:1}
 .ar-card:hover .ar-fav,.ar-card:focus-within .ar-fav,.ar-card[data-selecting="true"] .ar-fav{opacity:0}
@@ -3517,18 +3541,21 @@ button.ar-sec__head:disabled:hover{background:transparent}
 .ar-card__check[data-checked="true"]{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted)}
 .ar-card__check:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 .ar-card__check:disabled{cursor:default;opacity:.6}
-.ar-card__trash{position:absolute;top:4px;right:4px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-error);cursor:pointer;opacity:0;pointer-events:none;transition:opacity .12s ease,background-color .12s ease}
+.ar-card__trash{position:absolute;top:50%;right:4px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--ar-danger);cursor:pointer;opacity:0;pointer-events:none;transform:translateY(-50%);transition:opacity .12s ease,background-color .12s ease}
 .ar-card:hover .ar-card__trash,.ar-card:focus-within .ar-card__trash{opacity:1;pointer-events:auto}
-.ar-card__trash:hover{background:color-mix(in oklab,var(--dsw-alias-label-error) 14%,transparent)}
-.ar-card__trash:focus-visible{outline:2px solid var(--dsw-alias-label-error);outline-offset:0}
+.ar-card__trash:hover{background:color-mix(in oklab,var(--ar-danger) 14%,transparent)}
+.ar-card__trash:focus-visible{outline:2px solid var(--ar-danger);outline-offset:0}
 .ar-card__trash:disabled{cursor:default;opacity:.35}
 .ar-card[data-selecting="true"] .ar-card__trash,.ar-card[data-confirming="true"] .ar-card__trash{display:none}
-.ar-card__confirm{position:absolute;inset:0;z-index:3;display:flex;align-items:center;gap:6px;padding:0 8px;border-radius:inherit;background:color-mix(in oklab,var(--dsw-alias-bg-base) 94%,var(--dsw-alias-label-error) 6%)}
-.ar-card__confirm-text{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:11.5px;font-weight:600;line-height:16px;color:var(--dsw-alias-label-primary)}
+.ar-card__confirm{position:absolute;inset:0;z-index:3;display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:4px;padding:6px 8px;border-radius:inherit;background:color-mix(in oklab,var(--dsw-alias-bg-base) 94%,var(--ar-danger) 6%);transform-origin:right center;animation:ar-confirm-in .2s cubic-bezier(.2,.7,.2,1) both}
+.ar-card__confirm-text{flex:none;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:11.5px;font-weight:600;line-height:16px;color:var(--ar-danger);text-align:center}
+.ar-card__confirm-actions{display:flex;align-items:center;justify-content:center;gap:6px;min-width:0}
+/* Cancel plays the entrance in reverse: back towards the trash on the right. */
+.ar-card__confirm[data-leaving="true"]{animation:ar-confirm-out .16s cubic-bezier(.4,0,.6,1) both}
 .ar-card__confirm-btn{flex:none;height:22px;padding:0 6px;border:1px solid var(--ar-line-strong);border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11.5px;line-height:20px;cursor:pointer;white-space:nowrap}
 .ar-card__confirm-btn:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
-.ar-card__confirm-btn--danger{border-color:color-mix(in oklab,var(--dsw-alias-label-error) 30%,transparent);background:color-mix(in oklab,var(--dsw-alias-label-error) 12%,transparent);color:var(--dsw-alias-label-error)}
-.ar-card__confirm-btn--danger:hover{background:color-mix(in oklab,var(--dsw-alias-label-error) 18%,transparent);color:var(--dsw-alias-label-error)}
+.ar-card__confirm-btn--danger{border-color:color-mix(in oklab,var(--ar-danger) 30%,transparent);background:color-mix(in oklab,var(--ar-danger) 12%,transparent);color:var(--ar-danger)}
+.ar-card__confirm-btn--danger:hover{background:color-mix(in oklab,var(--ar-danger) 18%,transparent);color:var(--ar-danger)}
 .ar-card__confirm-btn:disabled{opacity:.55;cursor:default}
 .ar-card__confirm-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 /* Drag feedback: the source keeps a dashed blank box until the pointer leaves
@@ -3558,8 +3585,8 @@ button.ar-sec__head:disabled:hover{background:transparent}
 .ar-bar__actions{display:flex;align-items:center;gap:2px}
 .ar-bar__btn{height:28px;padding:0 9px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:18px;cursor:pointer;white-space:nowrap}
 .ar-bar__btn:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
-.ar-bar__btn--danger{color:var(--dsw-alias-label-error)}
-.ar-bar__btn--danger:hover{background:color-mix(in oklab,var(--dsw-alias-label-error) 12%,transparent);color:var(--dsw-alias-label-error)}
+.ar-bar__btn--danger{color:var(--ar-danger)}
+.ar-bar__btn--danger:hover{background:color-mix(in oklab,var(--ar-danger) 12%,transparent);color:var(--ar-danger)}
 .ar-bar__btn:disabled{opacity:.45;cursor:default;background:transparent}
 .ar-bar__btn:focus-visible,.ar-bar__count:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 .ar-summary{pointer-events:auto;width:min(440px,calc(100% - 32px));max-height:320px;display:flex;flex-direction:column;border:1px solid var(--ar-line-strong);border-radius:12px;background:var(--dsw-alias-bg-overlay);box-shadow:0 18px 44px rgba(0,0,0,.28);overflow:hidden;outline:none;animation:ar-bar-in .16s cubic-bezier(.2,.7,.2,1) both}
@@ -3584,11 +3611,13 @@ button.ar-sec__head:disabled:hover{background:transparent}
 .ar-modal{position:absolute;inset:0;z-index:1200;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--dsw-alias-bg-mask-2,rgba(0,0,0,.35));animation:ar-fade-in .16s ease both}
 .ar-modal__panel{width:min(420px,100%);max-height:calc(100% - 24px);overflow-y:auto;padding:16px;border:1px solid var(--ar-line-strong);border-radius:12px;background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base));color:var(--dsw-alias-label-primary);box-shadow:0 24px 60px rgba(0,0,0,.32);animation:ar-modal-in .16s cubic-bezier(.2,.7,.2,1) both}
 .ar-modal__title{font-size:14px;line-height:20px;font-weight:600;letter-spacing:-.005em}
+/* Delete dialogs tint their heading and warning with the same red as every other delete affordance. */
+.ar-modal__panel[data-tone="danger"] .ar-modal__title,.ar-modal__panel[data-tone="danger"] .ar-modal__note{color:var(--ar-danger)}
 .ar-modal__body{margin-top:10px}
 .ar-modal__note{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:17px}
 .ar-modal__hint{display:flex;flex-direction:column;gap:2px;margin-top:10px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:17px}
 .ar-modal__hint-soft{color:var(--dsw-alias-label-tertiary);font-size:11px}
-.ar-modal__error{margin-top:10px;color:var(--dsw-alias-label-error);font-size:12px;line-height:17px}
+.ar-modal__error{margin-top:10px;color:var(--ar-danger);font-size:12px;line-height:17px}
 .ar-modal__actions{display:flex;justify-content:flex-end;gap:6px;margin-top:16px}
 .ar-pick-list{list-style:none;max-height:180px;overflow-y:auto;margin:8px 0 0;padding:0;border-top:1px solid var(--ar-line)}
 .ar-pick-list__row{display:flex;flex-direction:column;gap:1px;padding:6px 0;border-bottom:1px solid var(--ar-line)}
@@ -3601,12 +3630,14 @@ button.ar-sec__head:disabled:hover{background:transparent}
 .ar-form__select:focus{border-color:var(--dsw-alias-brand-primary)}
 .ar-form__select:disabled{opacity:.6}
 @keyframes ar-fade-in{from{opacity:0}}
+@keyframes ar-confirm-in{from{opacity:0;transform:translateX(10px) scale(.96)}}
+@keyframes ar-confirm-out{to{opacity:0;transform:translateX(10px) scale(.96)}}
 @keyframes ar-view-in{from{opacity:0;transform:translateY(var(--ar-shift,6px))}}
 @keyframes ar-bar-in{from{opacity:0;transform:translateY(8px)}}
 @keyframes ar-modal-in{from{opacity:0;transform:translateY(4px) scale(.985)}}
 .ar-toast{animation:ar-fade-in .16s ease both}
 @media (max-width:720px){.ar-bar-dock{left:0}.ar-modal{padding:12px}.ar-modal__panel{width:100%}}
-@media (prefers-reduced-motion:reduce){.ar-toast,.ar-view,.ar-sec__body,.ar-sec__chev,.ar-grid,.ar-card,.ar-card__check,.ar-card__trash,.ar-card__confirm,.ar-bar,.ar-summary,.ar-modal,.ar-modal__panel{animation:none;transition:none}}`
+@media (prefers-reduced-motion:reduce){.ar-toast,.ar-view,.ar-sec__body,.ar-sec__chev,.ar-grid,.ar-card,.ar-card__check,.ar-card__trash,.ar-card__confirm,.ar-card__confirm[data-leaving="true"],.ar-bar,.ar-summary,.ar-modal,.ar-modal__panel{animation:none;transition:none}}`
 
 module.exports = { CSS }
       },

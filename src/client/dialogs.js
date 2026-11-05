@@ -17,7 +17,7 @@ function focusablesIn(panel) {
 }
 
 /** A centered modal with a scrim, focus trap, Escape, and outside-click. */
-function Modal({ title, children, footer, onCancel, busy, initialFocusRef, width }) {
+function Modal({ title, children, footer, onCancel, busy, initialFocusRef, width, tone }) {
   const panelRef = useRef(null)
 
   useEffect(() => {
@@ -61,6 +61,7 @@ function Modal({ title, children, footer, onCancel, busy, initialFocusRef, width
       'div',
       {
         className: 'ar-modal__panel',
+        'data-tone': tone,
         role: 'dialog',
         'aria-modal': 'true',
         'aria-label': title,
@@ -85,6 +86,7 @@ function BatchDeleteDialog({ t, entries, busy, error, onCancel, onConfirm }) {
     Modal,
     {
       title,
+      tone: 'danger',
       onCancel,
       busy,
       initialFocusRef: cancelRef,
@@ -390,7 +392,7 @@ function SelectionSummary({ t, entries, onRemove, onClear, onJump, onClose }) {
                       title: t('select.remove', { title: entry.bookmark.title }),
                       onClick: () => onRemove(entry.bookmark.id),
                     },
-                    h(CloseGlyph, { size: 10 }),
+                    h(CloseGlyph, { size: 12 }),
                   ),
                 ),
               ),

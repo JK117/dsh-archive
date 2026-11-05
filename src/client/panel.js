@@ -365,9 +365,11 @@ function Panel(props) {
     void deleteOne(confirmingId)
   }, [confirmingId, deleteOne])
 
-  const cancelDeleteCard = useCallback(() => {
+  const cancelDeleteCard = useCallback((bookmarkId) => {
     if (busy) return
-    setConfirmingId(null)
+    // The card animates its confirm overlay out before calling back, so a
+    // delayed cancel from an old card must not close a newer card's overlay.
+    setConfirmingId((current) => (bookmarkId === undefined || current === bookmarkId ? null : current))
   }, [busy])
 
   const requestDeleteCard = useCallback(

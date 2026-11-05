@@ -1,27 +1,45 @@
-/** Small inline SVGs shared by the sidebar row and the panel. */
+/**
+ * Inline icons taken from the host's 16×16 outline set
+ * (`@deepseek-ai/dsh-client-ui-primitives`): Regular weight, 1px stroke.
+ * The path data is copied locally instead of importing the Host package so the
+ * plugin bundle stays self-contained, but the geometry, weight and sizes follow
+ * the host UI. Native names: archive-outline, chevron-right-outline,
+ * search-outline, trash-outline, check-outline, close-outline.
+ */
 const React = require('react')
 const h = React.createElement
 
-/** The archive-box glyph, shared by the sidebar row and the page header. */
-function ArchiveGlyph({ size, strokeWidth }) {
+/** The shared 16×16 outline frame used by every glyph below. */
+function Glyph({ size, strokeWidth, children }) {
   return h(
     'svg',
     {
       width: size,
       height: size,
-      viewBox: '0 0 24 24',
+      viewBox: '0 0 16 16',
       fill: 'none',
       stroke: 'currentColor',
-      strokeWidth: strokeWidth === undefined ? 1.7 : strokeWidth,
-      strokeLinecap: 'round',
-      strokeLinejoin: 'round',
+      strokeWidth: strokeWidth === undefined ? 1 : strokeWidth,
       'aria-hidden': 'true',
       focusable: 'false',
       style: { display: 'block' },
     },
-    h('rect', { x: 3, y: 3.8, width: 18, height: 4.6, rx: 1.2 }),
-    h('path', { d: 'M4.6 8.4v9.5c0 1 .8 1.8 1.8 1.8h11.2c1 0 1.8-.8 1.8-1.8V8.4' }),
-    h('path', { d: 'M9.9 12.6h4.2' }),
+    children,
+  )
+}
+
+/** The archive-box glyph, shared by the sidebar row and the page header. */
+function ArchiveGlyph({ size, strokeWidth }) {
+  return h(
+    Glyph,
+    { size: size === undefined ? 20 : size, strokeWidth },
+    h('path', {
+      d: 'M13.5 2.5H2.5C1.94772 2.5 1.5 2.94772 1.5 3.5V4.5C1.5 5.05228 1.94772 5.5 2.5 5.5H13.5C14.0523 5.5 14.5 5.05228 14.5 4.5V3.5C14.5 2.94772 14.0523 2.5 13.5 2.5Z',
+    }),
+    h('path', {
+      d: 'M2.5 5.5V13.5C2.5 13.7652 2.60536 14.0196 2.79289 14.2071C2.98043 14.3946 3.23478 14.5 3.5 14.5H12.5C12.7652 14.5 13.0196 14.3946 13.2071 14.2071C13.3946 14.0196 13.5 13.7652 13.5 13.5V5.5',
+    }),
+    h('path', { d: 'M6.5 9.5H9.5' }),
   )
 }
 
@@ -31,20 +49,11 @@ function Chevron({ open }) {
     'span',
     { className: 'ar-sec__chev' },
     h(
-      'svg',
-      {
-        width: 12,
-        height: 12,
-        viewBox: '0 0 12 12',
-        fill: 'none',
-        stroke: 'currentColor',
-        strokeWidth: 1.6,
-        strokeLinecap: 'round',
-        strokeLinejoin: 'round',
-        'aria-hidden': 'true',
-        focusable: 'false',
-      },
-      h('path', { d: 'M4.5 2.5 8 6l-3.5 3.5' }),
+      Glyph,
+      { size: 14 },
+      h('path', {
+        d: 'M6 12L9.29289 8.70711C9.68342 8.31658 9.68342 7.68342 9.29289 7.29289L6 4',
+      }),
     ),
   )
 }
@@ -52,87 +61,55 @@ function Chevron({ open }) {
 /** The page-header search glyph. */
 function SearchGlyph() {
   return h(
-    'svg',
-    {
-      width: 13,
-      height: 13,
-      viewBox: '0 0 16 16',
-      fill: 'none',
-      stroke: 'currentColor',
-      strokeWidth: 1.5,
-      strokeLinecap: 'round',
-      'aria-hidden': 'true',
-      focusable: 'false',
-    },
-    h('circle', { cx: 7, cy: 7, r: 4.4 }),
-    h('path', { d: 'm10.4 10.4 3 3' }),
+    Glyph,
+    { size: 14 },
+    h('path', {
+      d: 'M6.58727 11.8586C9.55061 11.8586 11.9529 9.45637 11.9529 6.49304C11.9529 3.5297 9.55061 1.12744 6.58727 1.12744C3.62394 1.12744 1.22168 3.5297 1.22168 6.49304C1.22168 9.45637 3.62394 11.8586 6.58727 11.8586Z',
+    }),
+    h('path', { d: 'M10.2991 10.3933L14.7783 14.8725' }),
   )
 }
 
-/** The sidebar row: a 20px glyph that thickens while its panel is open. */
+/** The sidebar row: a 20px native archive glyph that thickens while open. */
 function PanelIcon({ size, active }) {
-  return h(ArchiveGlyph, { size, strokeWidth: active ? 1.9 : 1.7 })
+  return h(ArchiveGlyph, { size, strokeWidth: active ? 1.3 : 1 })
 }
 
 /** The card's delete affordance. */
 function TrashGlyph({ size }) {
   return h(
-    'svg',
-    {
-      width: size === undefined ? 14 : size,
-      height: size === undefined ? 14 : size,
-      viewBox: '0 0 16 16',
-      fill: 'none',
-      stroke: 'currentColor',
-      strokeWidth: 1.5,
-      strokeLinecap: 'round',
-      strokeLinejoin: 'round',
-      'aria-hidden': 'true',
-      focusable: 'false',
-    },
-    h('path', { d: 'M2.6 4.2h10.8' }),
-    h('path', { d: 'M5.2 4.2V3.1c0-.5.4-.9.9-.9h3.8c.5 0 .9.4.9.9v1.1' }),
-    h('path', { d: 'M4.1 4.2l.6 8.1c0 .5.4.9.9.9h4.8c.5 0 .9-.4.9-.9l.6-8.1' }),
-    h('path', { d: 'M6.7 6.8v3.9M9.3 6.8v3.9' }),
+    Glyph,
+    { size: size === undefined ? 14 : size },
+    h('path', { d: 'M1.28149 3.88831H14.7187' }),
+    h('path', {
+      d: 'M5.41602 3.88833V2.47962C5.41602 2.29282 5.52492 2.11366 5.71876 1.98157C5.9126 1.84948 6.17551 1.77527 6.44964 1.77527H9.55053C9.82466 1.77527 10.0876 1.84948 10.2814 1.98157C10.4753 2.11366 10.5842 2.29282 10.5842 2.47962V3.88833',
+    }),
+    h('path', {
+      d: 'M2.57349 3.88831L3.19366 13.2943C3.21937 13.5502 3.33952 13.7872 3.53065 13.9593C3.72178 14.1313 3.97016 14.2259 4.22729 14.2246H11.7728C12.0299 14.2259 12.2783 14.1313 12.4694 13.9593C12.6605 13.7872 12.7807 13.5502 12.8064 13.2943L13.4266 3.88831',
+    }),
+    h('path', { d: 'M6.44946 6.98926V11.1238' }),
+    h('path', { d: 'M9.55054 6.98926V11.1238' }),
   )
 }
 
 /** The checkmark inside the selection box. */
 function CheckGlyph({ size }) {
   return h(
-    'svg',
-    {
-      width: size === undefined ? 11 : size,
-      height: size === undefined ? 11 : size,
-      viewBox: '0 0 12 12',
-      fill: 'none',
-      stroke: 'currentColor',
-      strokeWidth: 1.9,
-      strokeLinecap: 'round',
-      strokeLinejoin: 'round',
-      'aria-hidden': 'true',
-      focusable: 'false',
-    },
-    h('path', { d: 'M2.2 6.2 4.9 8.9 9.8 3.6' }),
+    Glyph,
+    { size: size === undefined ? 12 : size },
+    h('path', {
+      d: 'M2.25 8.5L5.49732 11.7473C5.90519 12.1552 6.57263 12.1344 6.95426 11.7018L13.75 4',
+    }),
   )
 }
 
 /** Small close mark for summary rows. */
 function CloseGlyph({ size }) {
   return h(
-    'svg',
-    {
-      width: size === undefined ? 11 : size,
-      height: size === undefined ? 11 : size,
-      viewBox: '0 0 12 12',
-      fill: 'none',
-      stroke: 'currentColor',
-      strokeWidth: 1.6,
-      strokeLinecap: 'round',
-      'aria-hidden': 'true',
-      focusable: 'false',
-    },
-    h('path', { d: 'M3 3l6 6M9 3 3 9' }),
+    Glyph,
+    { size: size === undefined ? 12 : size },
+    h('path', { d: 'M2.5 2.5L13.5 13.5' }),
+    h('path', { d: 'M13.5 2.5L2.5 13.5' }),
   )
 }
 

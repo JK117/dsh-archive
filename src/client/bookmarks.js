@@ -5,6 +5,18 @@ const { useState, useEffect, useRef } = React
 const { Chevron, CheckGlyph, TrashGlyph } = require('./glyphs.js')
 const { Sortable } = require('./sortable.js')
 
+/** Keep in sync with the .16s exit animation in styles.js; 20ms covers a frame. */
+const CONFIRM_EXIT_MS = 180
+
+/** Mirrors the CSS reduced-motion query so cancel can skip the exit delay too. */
+function prefersReducedMotion() {
+  return (
+    typeof window !== 'undefined' &&
+    window.matchMedia !== undefined &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches === true
+  )
+}
+
 /** The single letter a favicon-less bookmark shows in its 18px tile. */
 function letterFor(bookmark) {
   try {
@@ -70,6 +82,7 @@ function BookmarkCard({
   const cancelRef = useRef(null)
   const confirmRef = useRef(null)
   const wasConfirming = useRef(false)
+  const [leaving, setLeaving] = useState(false)
 
   useEffect(() => {
     if (wasConfirming.current && !confirming && trashRef.current !== null) {
@@ -83,6 +96,18 @@ function BookmarkCard({
     return undefined
   }, [confirming])
 
+  // A cancel click keeps the overlay mounted for its reverse animation, then
+  // tells the panel to clear the confirming card.
+  useEffect(() => {
+    if (!leaving) return undefined
+    const timer = setTimeout(() => onCancelDelete(bookmark.id), CONFIRM_EXIT_MS)
+    return () => clearTimeout(timer)
+  }, [leaving, onCancelDelete, bookmark.id])
+
+  useEffect(() => {
+    if (!confirming) setLeaving(false)
+  }, [confirming])
+
   useEffect(() => {
     if (confirming && cancelRef.current !== null) cancelRef.current.focus()
   }, [confirming])
@@ -92,7 +117,7 @@ function BookmarkCard({
     const onPointerDown = (event) => {
       if (deleteBusy) return
       if (cardRef.current !== null && !cardRef.current.contains(event.target)) {
-        onCancelDelete()
+        onCancelDelete(bookmark.id)
       }
     }
     document.addEventListener('pointerdown', onPointerDown, true)
@@ -104,23 +129,34 @@ function BookmarkCard({
     const onKeyDown = (event) => {
       if (event.key !== 'Escape') return
       event.preventDefault()
-      if (!deleteBusy) onCancelDelete()
+      if (!deleteBusy) onCancelDelete(bookmark.id)
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [confirming, deleteBusy, onCancelDelete])
+
+  const requestCancel = () => {
+    if (leaving || deleteBusy) return
+    if (prefersReducedMotion()) {
+      onCancelDelete(bookmark.id)
+      return
+    }
+    setLeaving(true)
+  }
 
   const onConfirmKeyDown = (event) => {
     if (event.key !== 'Tab') return
     const cancel = cancelRef.current
     const confirm = confirmRef.current
     if (cancel === null || confirm === null) return
-    if (event.shiftKey && document.activeElement === cancel) {
-      event.preventDefault()
-      confirm.focus()
-    } else if (!event.shiftKey && document.activeElement === confirm) {
+    // Delete now comes first in the row, so the Tab loop runs delete -> cancel
+    // and wraps from cancel back to delete.
+    if (event.shiftKey && document.activeElement === confirm) {
       event.preventDefault()
       cancel.focus()
+    } else if (!event.shiftKey && document.activeElement === cancel) {
+      event.preventDefault()
+      confirm.focus()
     }
   }
 
@@ -180,7 +216,7 @@ function BookmarkCard({
             onToggle(bookmark.id)
           },
         },
-        selected ? h(CheckGlyph, { size: 11 }) : null,
+        selected ? h(CheckGlyph, { size: 12 }) : null,
       ) : null,
     ),
     h('span', { className: 'ar-card__title', 'aria-hidden': 'true' }, bookmark.title),
@@ -212,39 +248,45 @@ function BookmarkCard({
             role: 'dialog',
             'aria-labelledby': confirmLabelId,
             'data-no-drag': '1',
+            'data-leaving': leaving ? 'true' : 'false',
             onClick: (event) => event.stopPropagation(),
             onKeyDown: onConfirmKeyDown,
           },
           h('span', { className: 'ar-card__confirm-text', id: confirmLabelId }, t('delete.cardTitle')),
           h(
-            'button',
-            {
-              type: 'button',
-              className: 'ar-card__confirm-btn',
-              ref: cancelRef,
-              disabled: deleteBusy === true,
-              onClick: (event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                onCancelDelete()
+            'div',
+            { className: 'ar-card__confirm-actions' },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'ar-card__confirm-btn ar-card__confirm-btn--danger',
+                ref: confirmRef,
+                disabled: deleteBusy === true,
+                onClick: (event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  if (leaving) return
+                  onConfirmDelete()
+                },
               },
-            },
-            t('cancel'),
-          ),
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'ar-card__confirm-btn ar-card__confirm-btn--danger',
-              ref: confirmRef,
-              disabled: deleteBusy === true,
-              onClick: (event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                onConfirmDelete()
+              deleteBusy === true ? t('delete.busy') : t('delete.cardConfirm'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'ar-card__confirm-btn',
+                ref: cancelRef,
+                disabled: deleteBusy === true,
+                onClick: (event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  requestCancel()
+                },
               },
-            },
-            deleteBusy === true ? t('delete.busy') : t('delete.cardConfirm'),
+              t('cancel'),
+            ),
           ),
         )
       : null,
@@ -277,8 +319,8 @@ function ListSection({
   onReorderBookmarks,
 }) {
   const inner = [
-    h(Chevron, { key: 'chev', open }),
     h('span', { key: 'title', className: 'ar-sec__title' }, list.title),
+    h(Chevron, { key: 'chev', open }),
     h('span', { key: 'count', className: 'ar-sec__count' }, list.count),
   ]
   const sortAttrs = {
