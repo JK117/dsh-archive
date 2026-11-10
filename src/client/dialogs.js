@@ -409,4 +409,448 @@ function SelectionSummary({ t, entries, onRemove, onClear, onJump, onClose }) {
   )
 }
 
-module.exports = { Modal, BatchDeleteDialog, MoveDialog, SelectionSummary }
+/**
+ * Turns what a person typed into an absolute http(s) URL. A bare host gets
+ * `https://`; any other scheme (`javascript:`, `mailto:`, `file:` …) is
+ * rejected. Host:port forms such as `example.com:8080` stay valid.
+ */
+function normalizeLink(value) {
+  const raw = typeof value === 'string' ? value.trim() : ''
+  if (raw === '') return ''
+
+  const scheme = raw.match(/^([a-z][a-z0-9+.-]*):/i)
+  if (scheme !== null && !/^https?$/i.test(scheme[1])) {
+    const hostPort = /^[^/?#]+:\d+(\/|$)/.test(raw)
+    if (!hostPort) return ''
+  }
+
+  let candidate = raw
+  if (!/^https?:\/\//i.test(raw)) {
+    candidate = raw.startsWith('//') ? 'https:' + raw : 'https://' + raw
+  }
+
+  try {
+    const url = new URL(candidate)
+    if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.hostname === '') {
+      return ''
+    }
+    return url.toString()
+  } catch {
+    return ''
+  }
+}
+
+function firstListId(group) {
+  return group === null || group === undefined ? '__new__' : group.lists[0]?.id ?? '__new__'
+}
+
+/**
+ * One bookmark entry. In `page` mode the person picks an existing group / list
+ * or names new ones; in `list` mode the destination is the list whose + button
+ * opened the dialog and only the link itself is asked for.
+ */
+function AddBookmarkDialog({
+  t,
+  groups,
+  activeGroupId,
+  mode,
+  fixedGroupId,
+  fixedListId,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}) {
+  const fixedGroup = groups.find((group) => group.id === fixedGroupId) ?? null
+  const fixedList =
+    fixedGroup === null
+      ? null
+      : fixedGroup.lists.find((list) => list.id === fixedListId) ?? null
+
+  const defaultGroupId =
+    groups.some((group) => group.id === activeGroupId)
+      ? activeGroupId
+      : groups[0]?.id ?? '__new__'
+  const defaultGroup = groups.find((group) => group.id === defaultGroupId) ?? null
+
+  const [url, setUrl] = useState('')
+  const [title, setTitle] = useState('')
+  const [groupChoice, setGroupChoice] = useState(defaultGroupId)
+  const [listChoice, setListChoice] = useState(firstListId(defaultGroup))
+  const [newGroupName, setNewGroupName] = useState('')
+  const [newListName, setNewListName] = useState('')
+  const [localError, setLocalError] = useState('')
+
+  const urlRef = useRef(null)
+  const groupNameRef = useRef(null)
+  const listNameRef = useRef(null)
+
+  const group = groups.find((candidate) => candidate.id === groupChoice) ?? null
+  const newGroup = mode === 'page' && groupChoice === '__new__'
+  const newList =
+    mode === 'page' && (newGroup || group === null || listChoice === '__new__')
+
+  const submit = () => {
+    if (busy === true) return
+    const link = normalizeLink(url)
+    if (link === '') {
+      setLocalError(t('add.invalidUrl'))
+      if (urlRef.current !== null) urlRef.current.focus()
+      return
+    }
+
+    const bookmark = { url: link, title: title.trim() }
+    let target
+
+    if (mode === 'list') {
+      if (fixedGroup === null || fixedList === null) {
+        setLocalError(t('add.failed'))
+        return
+      }
+      target = { groupId: fixedGroup.id, listId: fixedList.id }
+    } else if (newGroup) {
+      const name = newGroupName.trim()
+      if (name === '') {
+        setLocalError(t('add.missingGroup'))
+        if (groupNameRef.current !== null) groupNameRef.current.focus()
+        return
+      }
+      const listTitle = newListName.trim()
+      if (listTitle === '') {
+        setLocalError(t('add.missingList'))
+        if (listNameRef.current !== null) listNameRef.current.focus()
+        return
+      }
+      target = { groupName: name, listTitle }
+    } else if (newList) {
+      if (group === null) {
+        setLocalError(t('add.failed'))
+        return
+      }
+      const listTitle = newListName.trim()
+      if (listTitle === '') {
+        setLocalError(t('add.missingList'))
+        if (listNameRef.current !== null) listNameRef.current.focus()
+        return
+      }
+      target = { groupId: group.id, listTitle }
+    } else {
+      target = { groupId: group.id, listId: listChoice }
+    }
+
+    setLocalError('')
+    onConfirm({ bookmark, target })
+  }
+
+  const onEnter = (event) => {
+    if (event.key !== 'Enter') return
+    event.preventDefault()
+    submit()
+  }
+
+  const fields = []
+
+  fields.push(
+    h(
+      'label',
+      { className: 'ar-form__field', key: 'url' },
+      h('span', { className: 'ar-form__label' }, t('add.url')),
+      h('input', {
+        className: 'ar-form__input',
+        ref: urlRef,
+        type: 'url',
+        value: url,
+        placeholder: t('add.urlPlaceholder'),
+        spellCheck: false,
+        disabled: busy === true,
+        onChange: (event) => setUrl(event.target.value),
+        onKeyDown: onEnter,
+      }),
+    ),
+  )
+
+  fields.push(
+    h(
+      'label',
+      { className: 'ar-form__field', key: 'title' },
+      h('span', { className: 'ar-form__label' }, t('add.titleLabel')),
+      h('input', {
+        className: 'ar-form__input',
+        type: 'text',
+        value: title,
+        placeholder: t('add.titlePlaceholder'),
+        disabled: busy === true,
+        onChange: (event) => setTitle(event.target.value),
+        onKeyDown: onEnter,
+      }),
+    ),
+  )
+
+  if (mode === 'list') {
+    fields.push(
+      h(
+        'div',
+        { className: 'ar-form__target', key: 'target' },
+        h('span', { className: 'ar-form__label' }, t('add.target')),
+        h(
+          'span',
+          { className: 'ar-form__target-value' },
+          fixedGroup === null || fixedList === null
+            ? t('add.failed')
+            : fixedGroup.name + ' / ' + fixedList.title,
+        ),
+      ),
+    )
+  } else {
+    fields.push(
+      h(
+        'label',
+        { className: 'ar-form__field', key: 'group' },
+        h('span', { className: 'ar-form__label' }, t('add.group')),
+        h(
+          'select',
+          {
+            className: 'ar-form__select',
+            value: groupChoice,
+            disabled: busy === true,
+            onChange: (event) => {
+              const value = event.target.value
+              setGroupChoice(value)
+              setNewGroupName('')
+              setNewListName('')
+              const next = groups.find((candidate) => candidate.id === value) ?? null
+              setListChoice(firstListId(next))
+            },
+          },
+          groups.length === 0
+            ? h('option', { value: '__new__' }, t('add.newGroup'))
+            : groups.map((candidate) =>
+                h('option', { key: candidate.id, value: candidate.id }, candidate.name),
+              ),
+          groups.length === 0
+            ? null
+            : h('option', { value: '__new__' }, t('add.newGroup')),
+        ),
+      ),
+    )
+
+    if (newGroup) {
+      fields.push(
+        h(
+          'label',
+          { className: 'ar-form__field', key: 'groupName' },
+          h('span', { className: 'ar-form__label' }, t('add.groupName')),
+          h('input', {
+            className: 'ar-form__input',
+            ref: groupNameRef,
+            type: 'text',
+            value: newGroupName,
+            placeholder: t('add.groupPlaceholder'),
+            disabled: busy === true,
+            onChange: (event) => setNewGroupName(event.target.value),
+            onKeyDown: onEnter,
+          }),
+        ),
+      )
+    }
+
+    if (newGroup || group === null || group.lists.length === 0) {
+      fields.push(
+        h(
+          'label',
+          { className: 'ar-form__field', key: 'newList' },
+          h('span', { className: 'ar-form__label' }, t('add.listName')),
+          h('input', {
+            className: 'ar-form__input',
+            ref: listNameRef,
+            type: 'text',
+            value: newListName,
+            placeholder: t('add.listPlaceholder'),
+            disabled: busy === true,
+            onChange: (event) => setNewListName(event.target.value),
+            onKeyDown: onEnter,
+          }),
+        ),
+      )
+    } else {
+      fields.push(
+        h(
+          'label',
+          { className: 'ar-form__field', key: 'list' },
+          h('span', { className: 'ar-form__label' }, t('add.list')),
+          h(
+            'select',
+            {
+              className: 'ar-form__select',
+              value: listChoice,
+              disabled: busy === true,
+              onChange: (event) => {
+                setListChoice(event.target.value)
+                setNewListName('')
+              },
+            },
+            group.lists.map((candidate) =>
+              h('option', { key: candidate.id, value: candidate.id }, candidate.title),
+            ),
+            h('option', { value: '__new__' }, t('add.newList')),
+          ),
+        ),
+      )
+
+      if (listChoice === '__new__') {
+        fields.push(
+          h(
+            'label',
+            { className: 'ar-form__field', key: 'listName' },
+            h('span', { className: 'ar-form__label' }, t('add.listName')),
+            h('input', {
+              className: 'ar-form__input',
+              ref: listNameRef,
+              type: 'text',
+              value: newListName,
+              placeholder: t('add.listPlaceholder'),
+              disabled: busy === true,
+              onChange: (event) => setNewListName(event.target.value),
+              onKeyDown: onEnter,
+            }),
+          ),
+        )
+      }
+    }
+  }
+
+  const message = localError !== '' ? localError : error
+
+  return h(
+    Modal,
+    {
+      title: t('add.title'),
+      onCancel,
+      busy,
+      initialFocusRef: urlRef,
+      width: 'min(440px, 100%)',
+      footer: h(
+        'div',
+        { className: 'ar-modal__actions' },
+        h(
+          'button',
+          { type: 'button', className: 'ar-btn', disabled: busy === true, onClick: onCancel },
+          t('cancel'),
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ar-btn ar-btn--primary',
+            disabled: busy === true,
+            onClick: submit,
+          },
+          busy === true ? t('add.busy') : t('add.confirm'),
+        ),
+      ),
+    },
+    fields,
+    message === '' || message === null || message === undefined
+      ? null
+      : h('div', { className: 'ar-modal__error', role: 'alert' }, message),
+  )
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return ''
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+}
+
+/**
+ * Confirms one JSON file import. The file has already been read and parsed by
+ * the panel; this dialog explains the merge rule and shows the rough shape so an
+ * accidental file is caught before it reaches the Host.
+ */
+function ImportDialog({
+  t,
+  fileName,
+  fileSize,
+  summary,
+  parseError,
+  busy,
+  error,
+  onCancel,
+  onPick,
+  onConfirm,
+}) {
+  const cancelRef = useRef(null)
+  const size = formatBytes(fileSize)
+  const meta = []
+  if (size !== '') meta.push(size)
+  if (summary !== null && summary !== undefined) {
+    meta.push(
+      t('import.summary', {
+        groups: summary.groups,
+        lists: summary.lists,
+        bookmarks: summary.bookmarks,
+      }),
+    )
+  }
+
+  const canImport = busy !== true && summary !== null && summary !== undefined && parseError === ''
+
+  return h(
+    Modal,
+    {
+      title: t('import.title'),
+      onCancel,
+      busy,
+      initialFocusRef: cancelRef,
+      width: 'min(460px, 100%)',
+      footer: h(
+        'div',
+        { className: 'ar-modal__actions' },
+        h(
+          'button',
+          { type: 'button', className: 'ar-btn', disabled: busy === true, onClick: onPick },
+          t('import.pick'),
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ar-btn',
+            ref: cancelRef,
+            disabled: busy === true,
+            onClick: onCancel,
+          },
+          t('cancel'),
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ar-btn ar-btn--primary',
+            disabled: !canImport,
+            onClick: onConfirm,
+          },
+          busy === true ? t('import.busy') : t('import.confirm'),
+        ),
+      ),
+    },
+    h('div', { className: 'ar-modal__note' }, t('import.note', { name: fileName })),
+    meta.length === 0 ? null : h('div', { className: 'ar-import__meta' }, meta.join(' · ')),
+    parseError === '' || parseError === null || parseError === undefined
+      ? null
+      : h('div', { className: 'ar-modal__error', role: 'alert' }, parseError),
+    error === '' || error === null || error === undefined
+      ? null
+      : h('div', { className: 'ar-modal__error', role: 'alert' }, error),
+  )
+}
+
+module.exports = {
+  Modal,
+  BatchDeleteDialog,
+  MoveDialog,
+  SelectionSummary,
+  AddBookmarkDialog,
+  ImportDialog,
+}

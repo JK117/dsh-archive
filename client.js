@@ -74,7 +74,7 @@ module.exports = { fetchLibrary, openBookmark, mutateLibrary }
 const React = require('react')
 const h = React.createElement
 const { useState, useEffect, useRef } = React
-const { Chevron, CheckGlyph, TrashGlyph } = require('./glyphs.js')
+const { Chevron, CheckGlyph, TrashGlyph, PlusGlyph } = require('./glyphs.js')
 const { Sortable } = require('./sortable.js')
 
 /** Keep in sync with the .16s exit animation in styles.js; 20ms covers a frame. */
@@ -393,6 +393,7 @@ function ListSection({
   confirmingId,
   deleteBusy,
   onToggle,
+  onAdd,
   onOpen,
   onToggleSelect,
   onRequestDelete,
@@ -428,6 +429,29 @@ function ListSection({
         inner,
       )
 
+  const addLabel = t('add.toListAria', { list: list.title })
+  const addButton =
+    canMutate === true
+      ? h(
+          'button',
+          {
+            type: 'button',
+            className: 'ar-sec__add',
+            title: addLabel,
+            'aria-label': addLabel,
+            'data-list-add': list.id,
+            'data-no-drag': '1',
+            disabled: busy === true,
+            onClick: (event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              onAdd(list.id)
+            },
+          },
+          h(PlusGlyph, { size: 14 }),
+        )
+      : null
+
   const bookmarkIds = list.bookmarks.map((bookmark) => bookmark.id)
   const gridDisabled =
     !sortable || selectionMode === true || busy === true || bookmarkIds.length < 2
@@ -440,7 +464,12 @@ function ListSection({
       'data-section-id': list.id,
       'aria-label': list.title,
     },
-    head,
+    h(
+      'div',
+      { className: 'ar-sec__headbar', 'data-add': canMutate === true ? 'true' : 'false' },
+      head,
+      addButton,
+    ),
     h(
       'div',
       { className: 'ar-sec__body' },
@@ -555,6 +584,9 @@ const DRAG_TRIGGER_DISTANCE = 24
 /** Touch movement before the hold completes cancels the drag, so scrolling works. */
 const TOUCH_SCROLL_TOLERANCE = 8
 
+/** Mirrors the Host's MAX_DATA_BYTES; larger imports are rejected before reading. */
+const MAX_IMPORT_BYTES = 8 * 1024 * 1024
+
 /** Candy hues cycled by the left rail and the right column's group title. */
 const TONE_COUNT = 8
 
@@ -569,6 +601,7 @@ module.exports = {
   HOLD_MS,
   DRAG_TRIGGER_DISTANCE,
   TOUCH_SCROLL_TOLERANCE,
+  MAX_IMPORT_BYTES,
   TONE_COUNT,
 }
       },
@@ -984,7 +1017,451 @@ function SelectionSummary({ t, entries, onRemove, onClear, onJump, onClose }) {
   )
 }
 
-module.exports = { Modal, BatchDeleteDialog, MoveDialog, SelectionSummary }
+/**
+ * Turns what a person typed into an absolute http(s) URL. A bare host gets
+ * `https://`; any other scheme (`javascript:`, `mailto:`, `file:` …) is
+ * rejected. Host:port forms such as `example.com:8080` stay valid.
+ */
+function normalizeLink(value) {
+  const raw = typeof value === 'string' ? value.trim() : ''
+  if (raw === '') return ''
+
+  const scheme = raw.match(/^([a-z][a-z0-9+.-]*):/i)
+  if (scheme !== null && !/^https?$/i.test(scheme[1])) {
+    const hostPort = /^[^/?#]+:\d+(\/|$)/.test(raw)
+    if (!hostPort) return ''
+  }
+
+  let candidate = raw
+  if (!/^https?:\/\//i.test(raw)) {
+    candidate = raw.startsWith('//') ? 'https:' + raw : 'https://' + raw
+  }
+
+  try {
+    const url = new URL(candidate)
+    if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.hostname === '') {
+      return ''
+    }
+    return url.toString()
+  } catch {
+    return ''
+  }
+}
+
+function firstListId(group) {
+  return group === null || group === undefined ? '__new__' : group.lists[0]?.id ?? '__new__'
+}
+
+/**
+ * One bookmark entry. In `page` mode the person picks an existing group / list
+ * or names new ones; in `list` mode the destination is the list whose + button
+ * opened the dialog and only the link itself is asked for.
+ */
+function AddBookmarkDialog({
+  t,
+  groups,
+  activeGroupId,
+  mode,
+  fixedGroupId,
+  fixedListId,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}) {
+  const fixedGroup = groups.find((group) => group.id === fixedGroupId) ?? null
+  const fixedList =
+    fixedGroup === null
+      ? null
+      : fixedGroup.lists.find((list) => list.id === fixedListId) ?? null
+
+  const defaultGroupId =
+    groups.some((group) => group.id === activeGroupId)
+      ? activeGroupId
+      : groups[0]?.id ?? '__new__'
+  const defaultGroup = groups.find((group) => group.id === defaultGroupId) ?? null
+
+  const [url, setUrl] = useState('')
+  const [title, setTitle] = useState('')
+  const [groupChoice, setGroupChoice] = useState(defaultGroupId)
+  const [listChoice, setListChoice] = useState(firstListId(defaultGroup))
+  const [newGroupName, setNewGroupName] = useState('')
+  const [newListName, setNewListName] = useState('')
+  const [localError, setLocalError] = useState('')
+
+  const urlRef = useRef(null)
+  const groupNameRef = useRef(null)
+  const listNameRef = useRef(null)
+
+  const group = groups.find((candidate) => candidate.id === groupChoice) ?? null
+  const newGroup = mode === 'page' && groupChoice === '__new__'
+  const newList =
+    mode === 'page' && (newGroup || group === null || listChoice === '__new__')
+
+  const submit = () => {
+    if (busy === true) return
+    const link = normalizeLink(url)
+    if (link === '') {
+      setLocalError(t('add.invalidUrl'))
+      if (urlRef.current !== null) urlRef.current.focus()
+      return
+    }
+
+    const bookmark = { url: link, title: title.trim() }
+    let target
+
+    if (mode === 'list') {
+      if (fixedGroup === null || fixedList === null) {
+        setLocalError(t('add.failed'))
+        return
+      }
+      target = { groupId: fixedGroup.id, listId: fixedList.id }
+    } else if (newGroup) {
+      const name = newGroupName.trim()
+      if (name === '') {
+        setLocalError(t('add.missingGroup'))
+        if (groupNameRef.current !== null) groupNameRef.current.focus()
+        return
+      }
+      const listTitle = newListName.trim()
+      if (listTitle === '') {
+        setLocalError(t('add.missingList'))
+        if (listNameRef.current !== null) listNameRef.current.focus()
+        return
+      }
+      target = { groupName: name, listTitle }
+    } else if (newList) {
+      if (group === null) {
+        setLocalError(t('add.failed'))
+        return
+      }
+      const listTitle = newListName.trim()
+      if (listTitle === '') {
+        setLocalError(t('add.missingList'))
+        if (listNameRef.current !== null) listNameRef.current.focus()
+        return
+      }
+      target = { groupId: group.id, listTitle }
+    } else {
+      target = { groupId: group.id, listId: listChoice }
+    }
+
+    setLocalError('')
+    onConfirm({ bookmark, target })
+  }
+
+  const onEnter = (event) => {
+    if (event.key !== 'Enter') return
+    event.preventDefault()
+    submit()
+  }
+
+  const fields = []
+
+  fields.push(
+    h(
+      'label',
+      { className: 'ar-form__field', key: 'url' },
+      h('span', { className: 'ar-form__label' }, t('add.url')),
+      h('input', {
+        className: 'ar-form__input',
+        ref: urlRef,
+        type: 'url',
+        value: url,
+        placeholder: t('add.urlPlaceholder'),
+        spellCheck: false,
+        disabled: busy === true,
+        onChange: (event) => setUrl(event.target.value),
+        onKeyDown: onEnter,
+      }),
+    ),
+  )
+
+  fields.push(
+    h(
+      'label',
+      { className: 'ar-form__field', key: 'title' },
+      h('span', { className: 'ar-form__label' }, t('add.titleLabel')),
+      h('input', {
+        className: 'ar-form__input',
+        type: 'text',
+        value: title,
+        placeholder: t('add.titlePlaceholder'),
+        disabled: busy === true,
+        onChange: (event) => setTitle(event.target.value),
+        onKeyDown: onEnter,
+      }),
+    ),
+  )
+
+  if (mode === 'list') {
+    fields.push(
+      h(
+        'div',
+        { className: 'ar-form__target', key: 'target' },
+        h('span', { className: 'ar-form__label' }, t('add.target')),
+        h(
+          'span',
+          { className: 'ar-form__target-value' },
+          fixedGroup === null || fixedList === null
+            ? t('add.failed')
+            : fixedGroup.name + ' / ' + fixedList.title,
+        ),
+      ),
+    )
+  } else {
+    fields.push(
+      h(
+        'label',
+        { className: 'ar-form__field', key: 'group' },
+        h('span', { className: 'ar-form__label' }, t('add.group')),
+        h(
+          'select',
+          {
+            className: 'ar-form__select',
+            value: groupChoice,
+            disabled: busy === true,
+            onChange: (event) => {
+              const value = event.target.value
+              setGroupChoice(value)
+              setNewGroupName('')
+              setNewListName('')
+              const next = groups.find((candidate) => candidate.id === value) ?? null
+              setListChoice(firstListId(next))
+            },
+          },
+          groups.length === 0
+            ? h('option', { value: '__new__' }, t('add.newGroup'))
+            : groups.map((candidate) =>
+                h('option', { key: candidate.id, value: candidate.id }, candidate.name),
+              ),
+          groups.length === 0
+            ? null
+            : h('option', { value: '__new__' }, t('add.newGroup')),
+        ),
+      ),
+    )
+
+    if (newGroup) {
+      fields.push(
+        h(
+          'label',
+          { className: 'ar-form__field', key: 'groupName' },
+          h('span', { className: 'ar-form__label' }, t('add.groupName')),
+          h('input', {
+            className: 'ar-form__input',
+            ref: groupNameRef,
+            type: 'text',
+            value: newGroupName,
+            placeholder: t('add.groupPlaceholder'),
+            disabled: busy === true,
+            onChange: (event) => setNewGroupName(event.target.value),
+            onKeyDown: onEnter,
+          }),
+        ),
+      )
+    }
+
+    if (newGroup || group === null || group.lists.length === 0) {
+      fields.push(
+        h(
+          'label',
+          { className: 'ar-form__field', key: 'newList' },
+          h('span', { className: 'ar-form__label' }, t('add.listName')),
+          h('input', {
+            className: 'ar-form__input',
+            ref: listNameRef,
+            type: 'text',
+            value: newListName,
+            placeholder: t('add.listPlaceholder'),
+            disabled: busy === true,
+            onChange: (event) => setNewListName(event.target.value),
+            onKeyDown: onEnter,
+          }),
+        ),
+      )
+    } else {
+      fields.push(
+        h(
+          'label',
+          { className: 'ar-form__field', key: 'list' },
+          h('span', { className: 'ar-form__label' }, t('add.list')),
+          h(
+            'select',
+            {
+              className: 'ar-form__select',
+              value: listChoice,
+              disabled: busy === true,
+              onChange: (event) => {
+                setListChoice(event.target.value)
+                setNewListName('')
+              },
+            },
+            group.lists.map((candidate) =>
+              h('option', { key: candidate.id, value: candidate.id }, candidate.title),
+            ),
+            h('option', { value: '__new__' }, t('add.newList')),
+          ),
+        ),
+      )
+
+      if (listChoice === '__new__') {
+        fields.push(
+          h(
+            'label',
+            { className: 'ar-form__field', key: 'listName' },
+            h('span', { className: 'ar-form__label' }, t('add.listName')),
+            h('input', {
+              className: 'ar-form__input',
+              ref: listNameRef,
+              type: 'text',
+              value: newListName,
+              placeholder: t('add.listPlaceholder'),
+              disabled: busy === true,
+              onChange: (event) => setNewListName(event.target.value),
+              onKeyDown: onEnter,
+            }),
+          ),
+        )
+      }
+    }
+  }
+
+  const message = localError !== '' ? localError : error
+
+  return h(
+    Modal,
+    {
+      title: t('add.title'),
+      onCancel,
+      busy,
+      initialFocusRef: urlRef,
+      width: 'min(440px, 100%)',
+      footer: h(
+        'div',
+        { className: 'ar-modal__actions' },
+        h(
+          'button',
+          { type: 'button', className: 'ar-btn', disabled: busy === true, onClick: onCancel },
+          t('cancel'),
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ar-btn ar-btn--primary',
+            disabled: busy === true,
+            onClick: submit,
+          },
+          busy === true ? t('add.busy') : t('add.confirm'),
+        ),
+      ),
+    },
+    fields,
+    message === '' || message === null || message === undefined
+      ? null
+      : h('div', { className: 'ar-modal__error', role: 'alert' }, message),
+  )
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return ''
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+}
+
+/**
+ * Confirms one JSON file import. The file has already been read and parsed by
+ * the panel; this dialog explains the merge rule and shows the rough shape so an
+ * accidental file is caught before it reaches the Host.
+ */
+function ImportDialog({
+  t,
+  fileName,
+  fileSize,
+  summary,
+  parseError,
+  busy,
+  error,
+  onCancel,
+  onPick,
+  onConfirm,
+}) {
+  const cancelRef = useRef(null)
+  const size = formatBytes(fileSize)
+  const meta = []
+  if (size !== '') meta.push(size)
+  if (summary !== null && summary !== undefined) {
+    meta.push(
+      t('import.summary', {
+        groups: summary.groups,
+        lists: summary.lists,
+        bookmarks: summary.bookmarks,
+      }),
+    )
+  }
+
+  const canImport = busy !== true && summary !== null && summary !== undefined && parseError === ''
+
+  return h(
+    Modal,
+    {
+      title: t('import.title'),
+      onCancel,
+      busy,
+      initialFocusRef: cancelRef,
+      width: 'min(460px, 100%)',
+      footer: h(
+        'div',
+        { className: 'ar-modal__actions' },
+        h(
+          'button',
+          { type: 'button', className: 'ar-btn', disabled: busy === true, onClick: onPick },
+          t('import.pick'),
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ar-btn',
+            ref: cancelRef,
+            disabled: busy === true,
+            onClick: onCancel,
+          },
+          t('cancel'),
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ar-btn ar-btn--primary',
+            disabled: !canImport,
+            onClick: onConfirm,
+          },
+          busy === true ? t('import.busy') : t('import.confirm'),
+        ),
+      ),
+    },
+    h('div', { className: 'ar-modal__note' }, t('import.note', { name: fileName })),
+    meta.length === 0 ? null : h('div', { className: 'ar-import__meta' }, meta.join(' · ')),
+    parseError === '' || parseError === null || parseError === undefined
+      ? null
+      : h('div', { className: 'ar-modal__error', role: 'alert' }, parseError),
+    error === '' || error === null || error === undefined
+      ? null
+      : h('div', { className: 'ar-modal__error', role: 'alert' }, error),
+  )
+}
+
+module.exports = {
+  Modal,
+  BatchDeleteDialog,
+  MoveDialog,
+  SelectionSummary,
+  AddBookmarkDialog,
+  ImportDialog,
+}
       },
 "./glyphs.js": function (module, exports, require) {
 /**
@@ -1102,15 +1579,80 @@ function CloseGlyph({ size }) {
   )
 }
 
-module.exports = { ArchiveGlyph, Chevron, SearchGlyph, PanelIcon, TrashGlyph, CheckGlyph, CloseGlyph }
+/** Add actions: the page header entry and each list's top-right affordance. */
+function PlusGlyph({ size }) {
+  return h(
+    Glyph,
+    { size: size === undefined ? 14 : size },
+    h('path', { d: 'M8 2.25V13.75' }),
+    h('path', { d: 'M2.25 8H13.75' }),
+  )
+}
+
+/** Import: an arrow dropping into a tray. */
+function ImportGlyph({ size }) {
+  return h(
+    Glyph,
+    { size: size === undefined ? 14 : size },
+    h('path', { d: 'M8 1.75V9.75' }),
+    h('path', { d: 'M4.75 6.75L8 10L11.25 6.75' }),
+    h('path', {
+      d: 'M2.25 10.25V13.25C2.25 13.5261 2.47386 13.75 2.75 13.75H13.25C13.5261 13.75 13.75 13.5261 13.75 13.25V10.25',
+    }),
+  )
+}
+
+module.exports = {
+  ArchiveGlyph,
+  Chevron,
+  SearchGlyph,
+  PanelIcon,
+  TrashGlyph,
+  CheckGlyph,
+  CloseGlyph,
+  PlusGlyph,
+  ImportGlyph,
+}
       },
 "./header.js": function (module, exports, require) {
-/** The page header: the plugin name and the live search field. */
+/** The page header: the plugin name, the add / import entries, and search. */
 const React = require('react')
 const h = React.createElement
-const { ArchiveGlyph, SearchGlyph } = require('./glyphs.js')
+const { ArchiveGlyph, SearchGlyph, PlusGlyph, ImportGlyph } = require('./glyphs.js')
 
-function PageHeader({ t, query, onQueryChange, busy }) {
+function PageHeader({ t, query, onQueryChange, busy, canMutate, onAddBookmark, onImport }) {
+  const tools =
+    canMutate === true
+      ? h(
+          'div',
+          { className: 'ar-header__tools' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'ar-icon-btn ar-header__add',
+              title: t('add.title'),
+              'aria-label': t('add.title'),
+              disabled: busy === true,
+              onClick: onAddBookmark,
+            },
+            h(PlusGlyph, { size: 14 }),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'ar-icon-btn ar-header__import',
+              title: t('import.title'),
+              'aria-label': t('import.title'),
+              disabled: busy === true,
+              onClick: onImport,
+            },
+            h(ImportGlyph, { size: 14 }),
+          ),
+        )
+      : null
+
   return h(
     'header',
     { className: 'ar-header', key: 'header' },
@@ -1121,6 +1663,7 @@ function PageHeader({ t, query, onQueryChange, busy }) {
       h('h1', { className: 'ar-brand__name' }, t('title')),
     ),
     h('span', { className: 'ar-header__spacer' }),
+    tools,
     h(
       'label',
       { className: 'ar-search' },
@@ -1179,6 +1722,46 @@ const zh = {
 
   'action.move': '移动',
   'action.delete': '删除',
+
+  'add.title': '新增书签',
+  'add.toListAria': '在「{list}」中新增书签',
+  'add.url': '链接',
+  'add.urlPlaceholder': 'https://example.com/',
+  'add.titleLabel': '标题（可选）',
+  'add.titlePlaceholder': '留空则使用链接地址',
+  'add.target': '添加到',
+  'add.group': '分组',
+  'add.list': '列表',
+  'add.newGroup': '＋ 新建分组…',
+  'add.newList': '＋ 新建列表…',
+  'add.groupName': '新分组名称',
+  'add.groupPlaceholder': '输入新分组名称',
+  'add.listName': '新列表名称',
+  'add.listPlaceholder': '输入新列表名称',
+  'add.confirm': '添加',
+  'add.busy': '添加中…',
+  'add.done': '已添加书签',
+  'add.invalidUrl': '请输入有效的 http(s) 链接',
+  'add.missingGroup': '请输入新分组名称',
+  'add.missingList': '请输入新列表名称',
+  'add.duplicate': '这个列表里已经有相同的链接',
+  'add.failed': '添加失败，请重试',
+
+  'import.title': '导入书签',
+  'import.note': '将把「{name}」合并到书签库：同名分组 / 列表会合并，重复链接会跳过。',
+  'import.summary': '约 {groups} 个分组、{lists} 个列表、{bookmarks} 个书签',
+  'import.pick': '重新选择文件',
+  'import.confirm': '导入',
+  'import.busy': '导入中…',
+  'import.done': '已导入 {n} 个书签',
+  'import.created': '新增 {g} 个分组、{l} 个列表',
+  'import.skipped': '跳过 {k} 个重复 / 无效项',
+  'import.nothing': '没有新内容可导入',
+  'import.parseFailed': '无法解析这个 JSON 文件',
+  'import.shapeFailed': '这个 JSON 缺少 groups → lists → bookmarks 结构',
+  'import.tooLarge': '文件过大（上限 8 MB）',
+  'import.invalid': '这个 JSON 不是有效的书签库',
+  'import.failed': '导入失败，请重试',
 
   'delete.cardTitle': '删除这个书签？',
   'delete.cardAria': '删除「{title}」',
@@ -1251,6 +1834,46 @@ const en = {
 
   'action.move': 'Move',
   'action.delete': 'Delete',
+
+  'add.title': 'Add bookmark',
+  'add.toListAria': 'Add a bookmark to “{list}”',
+  'add.url': 'Link',
+  'add.urlPlaceholder': 'https://example.com/',
+  'add.titleLabel': 'Title (optional)',
+  'add.titlePlaceholder': 'Blank uses the link itself',
+  'add.target': 'Add to',
+  'add.group': 'Group',
+  'add.list': 'List',
+  'add.newGroup': '+ New group…',
+  'add.newList': '+ New list…',
+  'add.groupName': 'New group name',
+  'add.groupPlaceholder': 'Enter a new group name',
+  'add.listName': 'New list name',
+  'add.listPlaceholder': 'Enter a new list name',
+  'add.confirm': 'Add',
+  'add.busy': 'Adding…',
+  'add.done': 'Bookmark added',
+  'add.invalidUrl': 'Enter a valid http(s) link',
+  'add.missingGroup': 'Enter a new group name',
+  'add.missingList': 'Enter a new list name',
+  'add.duplicate': 'That link is already in this list',
+  'add.failed': "Couldn't add the bookmark. Try again.",
+
+  'import.title': 'Import bookmarks',
+  'import.note': '“{name}” will be merged into the library: matching groups and lists are reused, and duplicate links are skipped.',
+  'import.summary': 'About {groups} groups, {lists} lists, {bookmarks} bookmarks',
+  'import.pick': 'Choose another file',
+  'import.confirm': 'Import',
+  'import.busy': 'Importing…',
+  'import.done': 'Imported {n} bookmarks',
+  'import.created': 'Added {g} groups and {l} lists',
+  'import.skipped': 'Skipped {k} duplicates / invalid items',
+  'import.nothing': 'Nothing new to import',
+  'import.parseFailed': "Couldn't parse this JSON file",
+  'import.shapeFailed': 'This JSON has no groups → lists → bookmarks structure',
+  'import.tooLarge': 'The file is too large (8 MB limit)',
+  'import.invalid': 'This JSON is not a valid bookmark library',
+  'import.failed': "Couldn't import. Try again.",
 
   'delete.cardTitle': 'Delete this bookmark?',
   'delete.cardAria': 'Delete “{title}”',
@@ -1514,7 +2137,7 @@ const { PageHeader } = require('./header.js')
 const { GroupRail } = require('./sidebar.js')
 const { ListSection } = require('./bookmarks.js')
 const { Sortable } = require('./sortable.js')
-const { TONE_COUNT } = require('./constants.js')
+const { TONE_COUNT, MAX_IMPORT_BYTES } = require('./constants.js')
 const { fetchLibrary, openBookmark: requestOpen, mutateLibrary: requestMutation } = require('./api.js')
 const {
   readSavedState,
@@ -1541,7 +2164,29 @@ const {
   targetStats,
   entryMap,
 } = require('./selection.js')
-const { BatchDeleteDialog, MoveDialog, SelectionSummary } = require('./dialogs.js')
+const { BatchDeleteDialog, MoveDialog, SelectionSummary, AddBookmarkDialog, ImportDialog } = require('./dialogs.js')
+
+/** A quick, tolerant shape count for the import confirmation, not validation. */
+function summarizeImport(parsed) {
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  if (!Array.isArray(parsed.groups)) return null
+
+  let groups = 0
+  let lists = 0
+  let bookmarks = 0
+  for (const rawGroup of parsed.groups) {
+    if (rawGroup === null || typeof rawGroup !== 'object') continue
+    groups += 1
+    const rawLists = Array.isArray(rawGroup.lists) ? rawGroup.lists : []
+    for (const rawList of rawLists) {
+      if (rawList === null || typeof rawList !== 'object') continue
+      lists += 1
+      if (Array.isArray(rawList.bookmarks)) bookmarks += rawList.bookmarks.length
+      else if (Array.isArray(rawList.cards)) bookmarks += rawList.cards.length
+    }
+  }
+  return { groups, lists, bookmarks }
+}
 
 /**
  * @param props - the slot's locale-injected `t` seat.
@@ -1562,6 +2207,10 @@ function Panel(props) {
   const [confirmingId, setConfirmingId] = useState(null)
   const [dialog, setDialog] = useState(null)
   const [dialogError, setDialogError] = useState('')
+  const [entryDialog, setEntryDialog] = useState(null)
+  const [entryError, setEntryError] = useState('')
+  const [importDialog, setImportDialog] = useState(null)
+  const [importError, setImportError] = useState('')
   const [busy, setBusy] = useState(false)
   const [summaryOpen, setSummaryOpen] = useState(false)
   const [focusRequest, setFocusRequest] = useState(null)
@@ -1572,6 +2221,7 @@ function Panel(props) {
   const moveButtonRef = useRef(null)
   const deleteButtonRef = useRef(null)
   const dialogTriggerRef = useRef(null)
+  const fileInputRef = useRef(null)
 
   const orderSignature = useMemo(
     () => (collection === null ? '' : collectionSignature(collection)),
@@ -1620,6 +2270,10 @@ function Panel(props) {
         setConfirmingId(null)
         setDialog(null)
         setDialogError('')
+        setEntryDialog(null)
+        setEntryError('')
+        setImportDialog(null)
+        setImportError('')
         setSummaryOpen(false)
         setStatus('ready')
       } catch (error) {
@@ -1758,6 +2412,10 @@ function Panel(props) {
     setConfirmingId(null)
     setDialog(null)
     setDialogError('')
+    setEntryDialog(null)
+    setEntryError('')
+    setImportDialog(null)
+    setImportError('')
     setSummaryOpen(false)
   }, [])
 
@@ -1806,6 +2464,234 @@ function Panel(props) {
     },
     [t],
   )
+
+  const openAddBookmark = useCallback(() => {
+    if (busy || !canMutate) return
+    setEntryDialog({ mode: 'page', trigger: '.ar-header__add' })
+    setEntryError('')
+  }, [busy, canMutate])
+
+  const openAddToList = useCallback(
+    (listId) => {
+      if (busy || !canMutate || activeGroup === null) return
+      setEntryDialog({
+        mode: 'list',
+        groupId: activeGroup.id,
+        listId,
+        trigger: '[data-list-add="' + listId + '"]',
+      })
+      setEntryError('')
+    },
+    [busy, canMutate, activeGroup],
+  )
+
+  const closeEntryDialog = useCallback(() => {
+    if (busy) return
+    const trigger = entryDialog === null ? null : entryDialog.trigger
+    setEntryDialog(null)
+    setEntryError('')
+    if (trigger !== null) {
+      requestAnimationFrame(() => {
+        const element = document.querySelector(trigger)
+        if (element !== null && typeof element.focus === 'function') element.focus()
+      })
+    }
+  }, [busy, entryDialog])
+
+  const confirmAddBookmark = useCallback(
+    async (input) => {
+      if (entryDialog === null || busy || collection === null || !canMutate) return
+      setBusy(true)
+      setEntryError('')
+      try {
+        const payload = await requestMutation(
+          { type: 'create', bookmark: input.bookmark, target: input.target },
+          collection.revision,
+        )
+        applyPayload(payload)
+        setEntryDialog(null)
+        setQuery('')
+        setConfirmingId(null)
+        setSummaryOpen(false)
+        setToast(t('add.done'))
+
+        const created = payload.created ?? null
+        if (created !== null && created.groupId) setActiveGroupId(created.groupId)
+        if (created !== null && created.listId) {
+          setExpanded((current) => ({ ...current, [created.listId]: true }))
+        }
+
+        const selectors = []
+        if (created !== null && created.bookmarkId) {
+          selectors.push('[data-focus-id="' + created.bookmarkId + '"]')
+        }
+        if (created !== null && created.listId) {
+          selectors.push('[data-list-head="' + created.listId + '"]')
+        }
+        selectors.push('[data-group-title="true"]')
+        focusLater(selectors)
+
+        if (created !== null && created.listId) {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const section = document.querySelector(
+                '[data-section-id="' + created.listId + '"]',
+              )
+              if (section !== null && typeof section.scrollIntoView === 'function') {
+                section.scrollIntoView({ block: 'nearest' })
+              }
+            })
+          })
+        }
+      } catch (error) {
+        if (handleMutationError(error)) return
+        if (error?.code === 'duplicate-bookmark') setEntryError(t('add.duplicate'))
+        else if (error?.code === 'invalid-url') setEntryError(t('add.invalidUrl'))
+        else setEntryError(t('add.failed'))
+      } finally {
+        setBusy(false)
+      }
+    },
+    [
+      entryDialog,
+      busy,
+      collection,
+      canMutate,
+      applyPayload,
+      focusLater,
+      handleMutationError,
+      t,
+    ],
+  )
+
+  const pickImportFile = useCallback(() => {
+    if (busy) return
+    if (fileInputRef.current !== null) fileInputRef.current.click()
+  }, [busy])
+
+  const handleImportFile = useCallback(
+    async (file) => {
+      if (busy || file === null || file === undefined) return
+
+      if (file.size > MAX_IMPORT_BYTES) {
+        setImportDialog({
+          fileName: file.name,
+          fileSize: file.size,
+          data: null,
+          summary: null,
+          parseError: t('import.tooLarge'),
+        })
+        setImportError('')
+        return
+      }
+
+      let source
+      try {
+        source = await file.text()
+      } catch {
+        if (!mountedRef.current) return
+        setImportDialog({
+          fileName: file.name,
+          fileSize: file.size,
+          data: null,
+          summary: null,
+          parseError: t('import.parseFailed'),
+        })
+        setImportError('')
+        return
+      }
+      if (!mountedRef.current) return
+
+      let parsed
+      try {
+        parsed = JSON.parse(source.replace(/^\uFEFF/, ''))
+      } catch {
+        setImportDialog({
+          fileName: file.name,
+          fileSize: file.size,
+          data: null,
+          summary: null,
+          parseError: t('import.parseFailed'),
+        })
+        setImportError('')
+        return
+      }
+
+      const summary = summarizeImport(parsed)
+      setImportDialog({
+        fileName: file.name,
+        fileSize: file.size,
+        data: summary === null ? null : parsed,
+        summary,
+        parseError: summary === null ? t('import.shapeFailed') : '',
+      })
+      setImportError('')
+    },
+    [busy, t],
+  )
+
+  const closeImportDialog = useCallback(() => {
+    if (busy) return
+    setImportDialog(null)
+    setImportError('')
+    requestAnimationFrame(() => {
+      const element = document.querySelector('.ar-header__import')
+      if (element !== null && typeof element.focus === 'function') element.focus()
+    })
+  }, [busy])
+
+  const confirmImport = useCallback(async () => {
+    if (
+      importDialog === null ||
+      importDialog.data === null ||
+      busy ||
+      collection === null ||
+      !canMutate
+    ) {
+      return
+    }
+
+    setBusy(true)
+    setImportError('')
+    try {
+      const payload = await requestMutation(
+        { type: 'import', data: importDialog.data },
+        collection.revision,
+      )
+      applyPayload(payload)
+      setImportDialog(null)
+      setQuery('')
+      setConfirmingId(null)
+      setSummaryOpen(false)
+
+      const info = payload.imported ?? { groups: 0, lists: 0, bookmarks: 0, skipped: 0 }
+      const parts = []
+      if (info.bookmarks > 0) parts.push(t('import.done', { n: info.bookmarks }))
+      if (info.groups > 0 || info.lists > 0) {
+        parts.push(t('import.created', { g: info.groups, l: info.lists }))
+      }
+      if (info.skipped > 0) parts.push(t('import.skipped', { k: info.skipped }))
+      if (parts.length === 0) parts.push(t('import.nothing'))
+      setToast(parts.join(' · '))
+      focusLater(['[data-group-title="true"]', '.ar-group[data-active="true"]'])
+    } catch (error) {
+      if (handleMutationError(error)) return
+      if (error?.code === 'invalid-import') setImportError(t('import.invalid'))
+      else if (error?.code === 'request-too-large') setImportError(t('import.tooLarge'))
+      else setImportError(t('import.failed'))
+    } finally {
+      setBusy(false)
+    }
+  }, [
+    importDialog,
+    busy,
+    collection,
+    canMutate,
+    applyPayload,
+    focusLater,
+    handleMutationError,
+    t,
+  ])
 
   const deleteOne = useCallback(
     async (bookmarkId) => {
@@ -2171,14 +3057,23 @@ function Panel(props) {
     const onKeyDown = (event) => {
       if (event.key !== 'Escape') return
       if (dialog !== null || confirmingId !== null || summaryOpen) return
+      if (entryDialog !== null || importDialog !== null) return
       event.preventDefault()
       exitSelection()
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [selectionMode, dialog, confirmingId, summaryOpen, exitSelection])
+  }, [selectionMode, dialog, confirmingId, summaryOpen, entryDialog, importDialog, exitSelection])
 
-  const header = h(PageHeader, { t, query, onQueryChange: changeQuery, busy })
+  const header = h(PageHeader, {
+    t,
+    query,
+    onQueryChange: changeQuery,
+    busy,
+    canMutate,
+    onAddBookmark: openAddBookmark,
+    onImport: pickImportFile,
+  })
   const allListsOpen =
     activeGroup !== null &&
     activeLists.length > 0 &&
@@ -2204,20 +3099,96 @@ function Panel(props) {
     lastGroupIndexRef.current = groupIndex
   }, [groupIndex])
 
+  const entryDialogNode =
+    entryDialog === null
+      ? null
+      : h(AddBookmarkDialog, {
+          t,
+          groups,
+          activeGroupId: activeGroup === null ? null : activeGroup.id,
+          mode: entryDialog.mode,
+          fixedGroupId: entryDialog.groupId,
+          fixedListId: entryDialog.listId,
+          busy,
+          error: entryError,
+          onCancel: closeEntryDialog,
+          onConfirm: confirmAddBookmark,
+        })
+
+  const importDialogNode =
+    importDialog === null
+      ? null
+      : h(ImportDialog, {
+          t,
+          fileName: importDialog.fileName,
+          fileSize: importDialog.fileSize,
+          summary: importDialog.summary,
+          parseError: importDialog.parseError,
+          busy,
+          error: importError,
+          onCancel: closeImportDialog,
+          onPick: pickImportFile,
+          onConfirm: confirmImport,
+        })
+
+  let dialogNode = null
+  if (dialog !== null && dialog.type === 'delete') {
+    dialogNode = h(BatchDeleteDialog, {
+      t,
+      entries: dialogEntries,
+      busy,
+      error: dialogError,
+      onCancel: closeDialog,
+      onConfirm: confirmBatchDelete,
+    })
+  } else if (dialog !== null && dialog.type === 'move') {
+    dialogNode = h(MoveDialog, {
+      t,
+      groups,
+      activeGroupId: activeGroup === null ? null : activeGroup.id,
+      entries: dialogEntries,
+      busy,
+      error: dialogError,
+      onCancel: closeDialog,
+      onConfirm: confirmMove,
+    })
+  }
+
+  const fileInput = h('input', {
+    key: 'import-file',
+    ref: fileInputRef,
+    type: 'file',
+    accept: 'application/json,.json',
+    style: { display: 'none' },
+    onChange: (event) => {
+      const file = event.target.files !== null && event.target.files.length > 0
+        ? event.target.files[0]
+        : null
+      event.target.value = ''
+      if (file !== null) void handleImportFile(file)
+    },
+  })
+
+  const overlays = [fileInput, dialogNode, entryDialogNode, importDialogNode]
+  const toastNode =
+    toast === null ? null : h('div', { className: 'ar-toast', role: 'status' }, toast)
+  const dialogOpen = dialog !== null || entryDialog !== null || importDialog !== null
+
   if (status === 'loading') {
     return h(
       'div',
-      { className: 'ar-root' },
+      { className: 'ar-root', 'data-busy': busy ? 'true' : 'false' },
       h('style', { key: 'styles' }, CSS),
       header,
       h('div', { className: 'ar-state' }, t('status.loading')),
+      ...overlays,
     )
   }
 
   if (status === 'error') {
     return h(
       'div',
-      { className: 'ar-root' },
+      { className: 'ar-root', 'data-busy': busy ? 'true' : 'false' },
       h('style', { key: 'styles' }, CSS),
       header,
       h(
@@ -2236,13 +3207,19 @@ function Panel(props) {
           t('retry'),
         ),
       ),
+      toastNode,
+      ...overlays,
     )
   }
 
   if (collection !== null && groups.length === 0) {
     return h(
       'div',
-      { className: 'ar-root' },
+      {
+        className: 'ar-root',
+        'data-dialog-open': dialogOpen ? 'true' : 'false',
+        'data-busy': busy ? 'true' : 'false',
+      },
       h('style', { key: 'styles' }, CSS),
       header,
       h(
@@ -2261,6 +3238,8 @@ function Panel(props) {
           t('reload'),
         ),
       ),
+      toastNode,
+      ...overlays,
     )
   }
 
@@ -2274,7 +3253,8 @@ function Panel(props) {
     activeGroupId: activeGroup === null ? null : activeGroup.id,
     selectionMode,
     busy,
-    dragDisabled: confirmingId !== null || dialog !== null,
+    dragDisabled:
+      confirmingId !== null || dialog !== null || entryDialog !== null || importDialog !== null,
     onSelect: selectGroup,
     onReorder: reorderGroups,
   })
@@ -2381,7 +3361,9 @@ function Panel(props) {
               visibleListIds.length < 2 ||
               busy ||
               selectionMode ||
-              confirmingId !== null,
+              confirmingId !== null ||
+              entryDialog !== null ||
+              importDialog !== null,
             onReorder: reorderLists,
           },
           visibleLists.map((list) => {
@@ -2400,6 +3382,7 @@ function Panel(props) {
               confirmingId,
               deleteBusy: busy,
               onToggle: () => toggleList(list.id),
+              onAdd: openAddToList,
               onOpen: openBookmark,
               onToggleSelect: toggleSelect,
               onRequestDelete: requestDeleteCard,
@@ -2508,44 +3491,21 @@ function Panel(props) {
       )
     : null
 
-  let dialogNode = null
-  if (dialog !== null && dialog.type === 'delete') {
-    dialogNode = h(BatchDeleteDialog, {
-      t,
-      entries: dialogEntries,
-      busy,
-      error: dialogError,
-      onCancel: closeDialog,
-      onConfirm: confirmBatchDelete,
-    })
-  } else if (dialog !== null && dialog.type === 'move') {
-    dialogNode = h(MoveDialog, {
-      t,
-      groups,
-      activeGroupId: activeGroup === null ? null : activeGroup.id,
-      entries: dialogEntries,
-      busy,
-      error: dialogError,
-      onCancel: closeDialog,
-      onConfirm: confirmMove,
-    })
-  }
-
   return h(
     'div',
     {
       className: 'ar-root',
       'data-select-mode': selectionMode ? 'true' : 'false',
       'data-bar-visible': selectionBarVisible ? 'true' : 'false',
-      'data-dialog-open': dialog !== null ? 'true' : 'false',
+      'data-dialog-open': dialogOpen ? 'true' : 'false',
       'data-busy': busy ? 'true' : 'false',
     },
     h('style', { key: 'styles' }, CSS),
     header,
     h('div', { className: 'ar-body' }, side, main),
     dock,
-    dialogNode,
-    toast === null ? null : h('div', { className: 'ar-toast', role: 'status' }, toast),
+    ...overlays,
+    toastNode,
   )
 }
 
@@ -3458,6 +4418,13 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-brand__glyph{flex:none;display:inline-flex;align-items:center;color:var(--dsw-alias-brand-primary)}
 .ar-brand__name{flex:none;margin:0;font-size:18px;line-height:24px;font-weight:600;letter-spacing:.005em;white-space:nowrap}
 .ar-header__spacer{flex:1;min-width:8px}
+.ar-header__tools{flex:none;display:flex;align-items:center;gap:4px}
+.ar-icon-btn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:1px solid var(--ar-line);border-radius:7px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);cursor:pointer;transition:background-color .14s ease,border-color .14s ease,color .14s ease}
+.ar-icon-btn:hover{background:var(--dsw-alias-bg-layer-2);border-color:var(--ar-line-strong);color:var(--dsw-alias-label-primary)}
+.ar-icon-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.ar-icon-btn:disabled{opacity:.5;cursor:default}
+.ar-header__add{color:var(--dsw-alias-brand-primary)}
+.ar-header__add:hover{color:var(--dsw-alias-brand-primary)}
 .ar-search{position:relative;flex:none;display:flex;align-items:center;width:210px;height:28px;border:1px solid var(--ar-line);border-radius:7px;background:var(--dsw-alias-bg-layer-1);transition:border-color .16s ease}
 .ar-search:focus-within{border-color:var(--dsw-alias-brand-primary)}
 .ar-search__glyph{position:absolute;left:7px;display:inline-flex;color:var(--dsw-alias-label-secondary);pointer-events:none}
@@ -3510,12 +4477,18 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-sections{flex:1 0 auto;display:flex;flex-direction:column;padding:6px 0 0}
 .ar-sections>.ar-sec{border-top:1px solid var(--ar-line)}
 .ar-sections>.ar-sec:first-child{border-top:0}
-.ar-sec__head{position:relative;display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 16px 0 32px;border:0;border-radius:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;font-weight:600;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none}
-button.ar-sec__head:hover{background:var(--dsw-alias-bg-layer-2)}
+.ar-sec__headbar{position:relative;display:flex;align-items:center;height:32px}
+.ar-sec__head{position:relative;display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 36px 0 32px;border:0;border-radius:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;font-weight:600;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none}
+.ar-sec__headbar[data-add="false"] .ar-sec__head{padding-right:16px}
+button.ar-sec__head:hover,.ar-sec__headbar:hover button.ar-sec__head:not(:disabled){background:var(--dsw-alias-bg-layer-2)}
 .ar-sec__head[data-static="true"]{cursor:default}
 button.ar-sec__head:disabled{cursor:default}
 button.ar-sec__head:disabled:hover{background:transparent}
 .ar-sec__head:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
+.ar-sec__add{position:absolute;top:50%;right:8px;z-index:1;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--ar-list-ink-soft,var(--dsw-alias-label-secondary));cursor:pointer;opacity:.7;transform:translateY(-50%);transition:background-color .12s ease,color .12s ease,opacity .12s ease}
+.ar-sec__add:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-brand-primary);opacity:1}
+.ar-sec__add:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:0;opacity:1}
+.ar-sec__add:disabled{opacity:.35;cursor:default}
 .ar-sec__chev{flex:none;display:inline-flex;align-items:center;color:var(--ar-list-ink-soft,var(--dsw-alias-label-secondary));transition:transform .16s ease}
 .ar-sec[data-open="true"] .ar-sec__chev{transform:rotate(90deg)}
 .ar-sec__title{flex:0 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--ar-list-ink,var(--dsw-alias-label-primary))}
@@ -3664,6 +4637,13 @@ button.ar-sec__head:disabled:hover{background:transparent}
 .ar-form__select{width:100%;height:30px;padding:0 6px;border:1px solid var(--ar-line);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;outline:none}
 .ar-form__select:focus{border-color:var(--dsw-alias-brand-primary)}
 .ar-form__select:disabled{opacity:.6}
+.ar-form__input{width:100%;height:30px;padding:0 8px;border:1px solid var(--ar-line);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;outline:none}
+.ar-form__input:focus{border-color:var(--dsw-alias-brand-primary)}
+.ar-form__input:disabled{opacity:.6}
+.ar-form__input::placeholder{color:var(--dsw-alias-label-secondary);opacity:.85}
+.ar-form__target{display:flex;flex-direction:column;gap:3px;margin-bottom:12px;padding:8px 10px;border:1px solid var(--ar-line);border-radius:6px;background:var(--dsw-alias-bg-layer-1)}
+.ar-form__target-value{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:12px;line-height:17px;color:var(--dsw-alias-label-primary)}
+.ar-import__meta{margin-top:8px;color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:16px;font-variant-numeric:tabular-nums}
 @keyframes ar-fade-in{from{opacity:0}}
 @keyframes ar-confirm-in{from{opacity:0;transform:translateX(10px) scale(.96)}}
 @keyframes ar-confirm-out{to{opacity:0;transform:translateX(10px) scale(.96)}}

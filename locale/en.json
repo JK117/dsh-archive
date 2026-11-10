@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Archive",
-    "description": "Turns a bookmark library into a two-level archive: groups in the left column, collapsible lists in the right column, and bookmark cards with favicons that open in your default browser."
+    "description": "A two-level bookmark library: groups on the left, collapsible lists and cards on the right. Add a single link, import a JSON library, and open cards in your default browser."
   }
 }

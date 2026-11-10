@@ -12,7 +12,7 @@ import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 
-import { createLibraryStore, normalizeLibrary } from '../lib/library.js'
+import { createLibraryStore, normalizeImport, normalizeLibrary } from '../lib/library.js'
 import { handleLibrary, handleMutate, handleOpen } from '../routes.js'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
@@ -46,8 +46,17 @@ async function testDataModel() {
     }
   }
 
+  const expectedStats = {
+    groups: raw.groups.length,
+    lists: raw.groups.reduce((total, group) => total + group.lists.length, 0),
+    bookmarks: raw.groups.reduce(
+      (total, group) =>
+        total + group.lists.reduce((count, list) => count + list.bookmarks.length, 0),
+      0,
+    ),
+  }
   const library = normalizeLibrary(raw)
-  assert.deepEqual(library.stats, { groups: 13, lists: 55, bookmarks: 153 })
+  assert.deepEqual(library.stats, expectedStats)
   assert.match(library.groups[0].id, /^g_[A-Za-z0-9_-]+$/)
   assert.match(library.groups[0].lists[0].id, /^l_[A-Za-z0-9_-]+$/)
   assert.match(library.groups[0].lists[0].bookmarks[0].id, /^b_[A-Za-z0-9_-]+$/)
@@ -96,8 +105,102 @@ async function testEmptyStructures() {
   assert.equal(new Set(ids).size, 2)
 }
 
-async function testStableIds() {
-  const raw = {
+async function testImportCleaning() {
+  const imported = normalizeImport({
+    version: 4,
+    groups: [
+      {
+        name: 'Import - CSS',
+        type: 'public',
+        lists: [
+          {
+            title: 'Positioning',
+            labelIds: ['x'],
+            cards: [
+              {
+                title: 'Plain',
+                url: 'https://plain.example/',
+                favIconUrl: 'https://plain.example/f.ico',
+                customTitle: '',
+                customDescription: 'ignored',
+                description: 'ignored',
+              },
+              {
+                title: 'Old',
+                url: 'https://old.example/',
+                customTitle: 'Custom old',
+                favIconUrl: 'javascript:alert(1)',
+                description: 'ignored',
+              },
+              { title: 'Bad', url: 'file:///etc/passwd' },
+              { url: 'https://fallback.example/' },
+            ],
+          },
+          { title: 'Empty', cards: [] },
+          { title: '', cards: [{ title: 'Lost', url: 'https://lost.example/' }] },
+        ],
+      },
+      {
+        name: 'Modern',
+        lists: [
+          {
+            title: 'Bookmarks',
+            bookmarks: [
+              {
+                title: 'Modern',
+                url: 'https://modern.example/',
+                icon: 'https://modern.example/f.ico',
+                tags: ['ignored'],
+              },
+            ],
+          },
+        ],
+      },
+      { name: '', lists: [] },
+      { name: 'No lists', type: 'public' },
+    ],
+  })
+
+  assert.deepEqual(imported.skipped, { groups: 2, lists: 1, bookmarks: 1 })
+  assert.equal(imported.groups.length, 2)
+  assert.equal(imported.groups[0].name, 'CSS')
+  assert.equal(imported.groups[0].lists[0].bookmarks.length, 3)
+  assert.deepEqual(imported.groups[0].lists[0].bookmarks[0], {
+    title: 'Plain',
+    url: 'https://plain.example/',
+    icon: 'https://plain.example/f.ico',
+  })
+  assert.equal(imported.groups[0].lists[0].bookmarks[1].title, 'Custom old')
+  assert.equal('icon' in imported.groups[0].lists[0].bookmarks[1], false)
+  assert.equal(imported.groups[0].lists[0].bookmarks[2].title, 'https://fallback.example/')
+  assert.equal(imported.groups[0].lists[1].bookmarks.length, 0)
+  assert.equal(imported.groups[1].lists[0].bookmarks[0].title, 'Modern')
+
+  const serialized = JSON.stringify(imported)
+  for (const field of [
+    'version',
+    'favIconUrl',
+    'customTitle',
+    'customDescription',
+    'description',
+    'labelIds',
+    'tags',
+    'type',
+  ]) {
+    assert.equal(serialized.includes('"' + field + '"'), false)
+  }
+
+  let invalid = null
+  try {
+    normalizeImport({ groups: 'nope' })
+  } catch (error) {
+    invalid = error
+  }
+  assert.equal(invalid?.status, 400)
+  assert.equal(invalid?.code, 'invalid-import')
+}
+
+async function testStableIds() {  const raw = {
     groups: [
       {
         name: 'CSS',
@@ -359,6 +462,205 @@ async function testMutations() {
   }
 }
 
+async function testCreateAndImport() {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'dsh-archive-write-'))
+  const file = path.join(dir, 'bookmarks.json')
+  try {
+    await writeFile(
+      file,
+      JSON.stringify(
+        {
+          groups: [
+            {
+              name: 'A',
+              lists: [
+                {
+                  title: 'L',
+                  bookmarks: [{ title: 'x', url: 'https://x.example/' }],
+                },
+              ],
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    )
+
+    const store = createLibraryStore(file)
+    const first = await store.load()
+    const groupId = first.groups[0].id
+    const listId = first.groups[0].lists[0].id
+
+    const created = await store.mutate(
+      {
+        type: 'create',
+        target: { groupId, listId },
+        bookmark: { url: 'https://y.example', title: ' Y ' },
+      },
+      first.revision,
+    )
+    assert.deepEqual(created.stats, { groups: 1, lists: 1, bookmarks: 2 })
+    assert.equal(created.created.groupId, groupId)
+    assert.equal(created.created.listId, listId)
+    assert.match(created.created.bookmarkId, /^b_/)
+    assert.equal(
+      created.groups[0].lists[0].bookmarks.find((bookmark) => bookmark.id === created.created.bookmarkId)
+        ?.title,
+      'Y',
+    )
+
+    const added = await store.mutate(
+      {
+        type: 'create',
+        target: { groupName: 'New', listTitle: 'Fresh' },
+        bookmark: { url: 'https://new.example/' },
+      },
+      created.revision,
+    )
+    assert.deepEqual(added.stats, { groups: 2, lists: 2, bookmarks: 3 })
+    const newGroup = added.groups.find((group) => group.name === 'New')
+    const newList = newGroup?.lists.find((list) => list.title === 'Fresh')
+    assert.equal(added.created.groupId, newGroup?.id)
+    assert.equal(added.created.listId, newList?.id)
+    assert.equal(newList?.bookmarks[0].title, 'https://new.example/')
+
+    let duplicate = null
+    try {
+      await store.mutate(
+        {
+          type: 'create',
+          target: { groupId, listId },
+          bookmark: { url: 'https://y.example' },
+        },
+        added.revision,
+      )
+    } catch (error) {
+      duplicate = error
+    }
+    assert.equal(duplicate?.status, 409)
+    assert.equal(duplicate?.code, 'duplicate-bookmark')
+
+    const imported = await store.mutate(
+      {
+        type: 'import',
+        data: {
+          version: 4,
+          groups: [
+            {
+              name: 'A',
+              type: 'public',
+              lists: [
+                {
+                  title: 'L',
+                  labelIds: [],
+                  cards: [
+                    {
+                      title: 'Y again',
+                      url: 'https://y.example/',
+                      favIconUrl: 'https://y.example/f.ico',
+                    },
+                    {
+                      title: 'Z',
+                      url: 'https://z.example/',
+                      customTitle: 'Zed',
+                      description: 'ignored',
+                    },
+                    { title: 'Bad', url: 'javascript:alert(1)' },
+                  ],
+                },
+                {
+                  title: 'Imported list',
+                  cards: [{ title: 'I', url: 'https://i.example/' }],
+                },
+              ],
+            },
+            {
+              name: 'Imported group',
+              lists: [
+                {
+                  title: 'Only',
+                  bookmarks: [{ title: 'O', url: 'https://o.example/' }],
+                },
+              ],
+            },
+          ],
+        },
+      },
+      added.revision,
+    )
+    assert.deepEqual(imported.imported, {
+      groups: 1,
+      lists: 2,
+      bookmarks: 3,
+      duplicates: 1,
+      skipped: 2,
+    })
+    assert.deepEqual(imported.stats, { groups: 3, lists: 4, bookmarks: 6 })
+
+    const diskText = await readFile(file, 'utf8')
+    for (const field of [
+      'favIconUrl',
+      'customTitle',
+      'customDescription',
+      'description',
+      'labelIds',
+      '"type"',
+      '"version"',
+      '"cards"',
+    ]) {
+      assert.equal(diskText.includes(field), false)
+    }
+    const disk = JSON.parse(diskText)
+    const importedList = disk.groups
+      .find((group) => group.name === 'A')
+      .lists.find((list) => list.title === 'Imported list')
+    assert.deepEqual(importedList.bookmarks, [
+      { title: 'I', url: 'https://i.example/' },
+    ])
+
+    const again = await store.mutate(
+      {
+        type: 'import',
+        data: {
+          groups: [
+            {
+              name: 'A',
+              lists: [
+                {
+                  title: 'L',
+                  bookmarks: [
+                    { title: 'Y again', url: 'https://y.example/' },
+                    { title: 'Z', url: 'https://z.example/' },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+      imported.revision,
+    )
+    assert.equal(again.imported.bookmarks, 0)
+    assert.equal(again.imported.groups, 0)
+    assert.equal(again.imported.lists, 0)
+    assert.equal(again.imported.duplicates, 2)
+    assert.deepEqual(again.stats, imported.stats)
+    assert.equal(await readFile(file, 'utf8'), diskText)
+
+    let invalid = null
+    try {
+      await store.mutate({ type: 'import', data: { groups: 'nope' } }, again.revision)
+    } catch (error) {
+      invalid = error
+    }
+    assert.equal(invalid?.status, 400)
+    assert.equal(invalid?.code, 'invalid-import')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
 async function testSelectionHelpers() {
   const {
     toggleId,
@@ -455,11 +757,10 @@ async function testRoutes() {
   await libraryResponse.finished
   assert.equal(libraryResponse.status, 200)
   const libraryPayload = JSON.parse(libraryResponse.body)
-  assert.deepEqual(libraryPayload.stats, {
-    groups: 13,
-    lists: 55,
-    bookmarks: 153,
-  })
+  const rawLibrary = JSON.parse(
+    (await readFile(path.join(ROOT, 'data', 'bookmarks.json'), 'utf8')).replace(/^\uFEFF/, ''),
+  )
+  assert.deepEqual(libraryPayload.stats, normalizeLibrary(rawLibrary).stats)
   assert.match(libraryPayload.revision, /^[a-f0-9]{16}$/)
   assert.equal(typeof libraryPayload.capabilities.mutate, 'boolean')
 
@@ -555,12 +856,50 @@ async function testRoutes() {
   await mutateUnknown.finished
   assert.equal(mutateUnknown.status, 404)
   assert.deepEqual(JSON.parse(mutateUnknown.body), { error: 'unknown-bookmark' })
+
+  const createInvalidUrl = response()
+  await handleMutate(
+    request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        revision: '',
+        op: {
+          type: 'create',
+          bookmark: { url: 'javascript:alert(1)' },
+          target: { groupName: 'X', listTitle: 'Y' },
+        },
+      }),
+    }),
+    createInvalidUrl,
+  )
+  await createInvalidUrl.finished
+  assert.equal(createInvalidUrl.status, 400)
+  assert.deepEqual(JSON.parse(createInvalidUrl.body), { error: 'invalid-url' })
+
+  const importInvalidShape = response()
+  await handleMutate(
+    request({
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        revision: '',
+        op: { type: 'import', data: { groups: 'nope' } },
+      }),
+    }),
+    importInvalidShape,
+  )
+  await importInvalidShape.finished
+  assert.equal(importInvalidShape.status, 400)
+  assert.deepEqual(JSON.parse(importInvalidShape.body), { error: 'invalid-import' })
 }
 
 await test('data model', testDataModel)
 await test('empty structures', testEmptyStructures)
+await test('import cleaning', testImportCleaning)
 await test('stable ids', testStableIds)
 await test('mutations', testMutations)
+await test('create and import', testCreateAndImport)
 await test('client bundle', testClientBundle)
 await test('styles', testStyles)
 await test('order helpers', testOrderHelpers)

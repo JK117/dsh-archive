@@ -7,9 +7,9 @@
  * - it reads the plugin-owned library file (`data/bookmarks.json`), validates
  *   it, and serves the normalized render model, so the page never sees raw
  *   file data and replacing the file needs no code change;
- * - it applies delete / move operations with a revision check, an atomic
- *   rename, and a `bookmarks.json.bak` copy, so a failed write never damages
- *   the library;
+ * - it applies delete / move / create / import operations with a revision
+ *   check, an atomic rename, and a `bookmarks.json.bak` copy, so a failed
+ *   write never damages the library;
  * - it opens a bookmark in the system browser. A `target="_blank"` anchor
  *   inside the Web GUI would open another frame of the GUI, not the user's
  *   browser, so a click goes through `POST /dsh-archive/open`.

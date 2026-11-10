@@ -19,7 +19,7 @@ const { PageHeader } = require('./header.js')
 const { GroupRail } = require('./sidebar.js')
 const { ListSection } = require('./bookmarks.js')
 const { Sortable } = require('./sortable.js')
-const { TONE_COUNT } = require('./constants.js')
+const { TONE_COUNT, MAX_IMPORT_BYTES } = require('./constants.js')
 const { fetchLibrary, openBookmark: requestOpen, mutateLibrary: requestMutation } = require('./api.js')
 const {
   readSavedState,
@@ -46,7 +46,29 @@ const {
   targetStats,
   entryMap,
 } = require('./selection.js')
-const { BatchDeleteDialog, MoveDialog, SelectionSummary } = require('./dialogs.js')
+const { BatchDeleteDialog, MoveDialog, SelectionSummary, AddBookmarkDialog, ImportDialog } = require('./dialogs.js')
+
+/** A quick, tolerant shape count for the import confirmation, not validation. */
+function summarizeImport(parsed) {
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  if (!Array.isArray(parsed.groups)) return null
+
+  let groups = 0
+  let lists = 0
+  let bookmarks = 0
+  for (const rawGroup of parsed.groups) {
+    if (rawGroup === null || typeof rawGroup !== 'object') continue
+    groups += 1
+    const rawLists = Array.isArray(rawGroup.lists) ? rawGroup.lists : []
+    for (const rawList of rawLists) {
+      if (rawList === null || typeof rawList !== 'object') continue
+      lists += 1
+      if (Array.isArray(rawList.bookmarks)) bookmarks += rawList.bookmarks.length
+      else if (Array.isArray(rawList.cards)) bookmarks += rawList.cards.length
+    }
+  }
+  return { groups, lists, bookmarks }
+}
 
 /**
  * @param props - the slot's locale-injected `t` seat.
@@ -67,6 +89,10 @@ function Panel(props) {
   const [confirmingId, setConfirmingId] = useState(null)
   const [dialog, setDialog] = useState(null)
   const [dialogError, setDialogError] = useState('')
+  const [entryDialog, setEntryDialog] = useState(null)
+  const [entryError, setEntryError] = useState('')
+  const [importDialog, setImportDialog] = useState(null)
+  const [importError, setImportError] = useState('')
   const [busy, setBusy] = useState(false)
   const [summaryOpen, setSummaryOpen] = useState(false)
   const [focusRequest, setFocusRequest] = useState(null)
@@ -77,6 +103,7 @@ function Panel(props) {
   const moveButtonRef = useRef(null)
   const deleteButtonRef = useRef(null)
   const dialogTriggerRef = useRef(null)
+  const fileInputRef = useRef(null)
 
   const orderSignature = useMemo(
     () => (collection === null ? '' : collectionSignature(collection)),
@@ -125,6 +152,10 @@ function Panel(props) {
         setConfirmingId(null)
         setDialog(null)
         setDialogError('')
+        setEntryDialog(null)
+        setEntryError('')
+        setImportDialog(null)
+        setImportError('')
         setSummaryOpen(false)
         setStatus('ready')
       } catch (error) {
@@ -263,6 +294,10 @@ function Panel(props) {
     setConfirmingId(null)
     setDialog(null)
     setDialogError('')
+    setEntryDialog(null)
+    setEntryError('')
+    setImportDialog(null)
+    setImportError('')
     setSummaryOpen(false)
   }, [])
 
@@ -311,6 +346,234 @@ function Panel(props) {
     },
     [t],
   )
+
+  const openAddBookmark = useCallback(() => {
+    if (busy || !canMutate) return
+    setEntryDialog({ mode: 'page', trigger: '.ar-header__add' })
+    setEntryError('')
+  }, [busy, canMutate])
+
+  const openAddToList = useCallback(
+    (listId) => {
+      if (busy || !canMutate || activeGroup === null) return
+      setEntryDialog({
+        mode: 'list',
+        groupId: activeGroup.id,
+        listId,
+        trigger: '[data-list-add="' + listId + '"]',
+      })
+      setEntryError('')
+    },
+    [busy, canMutate, activeGroup],
+  )
+
+  const closeEntryDialog = useCallback(() => {
+    if (busy) return
+    const trigger = entryDialog === null ? null : entryDialog.trigger
+    setEntryDialog(null)
+    setEntryError('')
+    if (trigger !== null) {
+      requestAnimationFrame(() => {
+        const element = document.querySelector(trigger)
+        if (element !== null && typeof element.focus === 'function') element.focus()
+      })
+    }
+  }, [busy, entryDialog])
+
+  const confirmAddBookmark = useCallback(
+    async (input) => {
+      if (entryDialog === null || busy || collection === null || !canMutate) return
+      setBusy(true)
+      setEntryError('')
+      try {
+        const payload = await requestMutation(
+          { type: 'create', bookmark: input.bookmark, target: input.target },
+          collection.revision,
+        )
+        applyPayload(payload)
+        setEntryDialog(null)
+        setQuery('')
+        setConfirmingId(null)
+        setSummaryOpen(false)
+        setToast(t('add.done'))
+
+        const created = payload.created ?? null
+        if (created !== null && created.groupId) setActiveGroupId(created.groupId)
+        if (created !== null && created.listId) {
+          setExpanded((current) => ({ ...current, [created.listId]: true }))
+        }
+
+        const selectors = []
+        if (created !== null && created.bookmarkId) {
+          selectors.push('[data-focus-id="' + created.bookmarkId + '"]')
+        }
+        if (created !== null && created.listId) {
+          selectors.push('[data-list-head="' + created.listId + '"]')
+        }
+        selectors.push('[data-group-title="true"]')
+        focusLater(selectors)
+
+        if (created !== null && created.listId) {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const section = document.querySelector(
+                '[data-section-id="' + created.listId + '"]',
+              )
+              if (section !== null && typeof section.scrollIntoView === 'function') {
+                section.scrollIntoView({ block: 'nearest' })
+              }
+            })
+          })
+        }
+      } catch (error) {
+        if (handleMutationError(error)) return
+        if (error?.code === 'duplicate-bookmark') setEntryError(t('add.duplicate'))
+        else if (error?.code === 'invalid-url') setEntryError(t('add.invalidUrl'))
+        else setEntryError(t('add.failed'))
+      } finally {
+        setBusy(false)
+      }
+    },
+    [
+      entryDialog,
+      busy,
+      collection,
+      canMutate,
+      applyPayload,
+      focusLater,
+      handleMutationError,
+      t,
+    ],
+  )
+
+  const pickImportFile = useCallback(() => {
+    if (busy) return
+    if (fileInputRef.current !== null) fileInputRef.current.click()
+  }, [busy])
+
+  const handleImportFile = useCallback(
+    async (file) => {
+      if (busy || file === null || file === undefined) return
+
+      if (file.size > MAX_IMPORT_BYTES) {
+        setImportDialog({
+          fileName: file.name,
+          fileSize: file.size,
+          data: null,
+          summary: null,
+          parseError: t('import.tooLarge'),
+        })
+        setImportError('')
+        return
+      }
+
+      let source
+      try {
+        source = await file.text()
+      } catch {
+        if (!mountedRef.current) return
+        setImportDialog({
+          fileName: file.name,
+          fileSize: file.size,
+          data: null,
+          summary: null,
+          parseError: t('import.parseFailed'),
+        })
+        setImportError('')
+        return
+      }
+      if (!mountedRef.current) return
+
+      let parsed
+      try {
+        parsed = JSON.parse(source.replace(/^\uFEFF/, ''))
+      } catch {
+        setImportDialog({
+          fileName: file.name,
+          fileSize: file.size,
+          data: null,
+          summary: null,
+          parseError: t('import.parseFailed'),
+        })
+        setImportError('')
+        return
+      }
+
+      const summary = summarizeImport(parsed)
+      setImportDialog({
+        fileName: file.name,
+        fileSize: file.size,
+        data: summary === null ? null : parsed,
+        summary,
+        parseError: summary === null ? t('import.shapeFailed') : '',
+      })
+      setImportError('')
+    },
+    [busy, t],
+  )
+
+  const closeImportDialog = useCallback(() => {
+    if (busy) return
+    setImportDialog(null)
+    setImportError('')
+    requestAnimationFrame(() => {
+      const element = document.querySelector('.ar-header__import')
+      if (element !== null && typeof element.focus === 'function') element.focus()
+    })
+  }, [busy])
+
+  const confirmImport = useCallback(async () => {
+    if (
+      importDialog === null ||
+      importDialog.data === null ||
+      busy ||
+      collection === null ||
+      !canMutate
+    ) {
+      return
+    }
+
+    setBusy(true)
+    setImportError('')
+    try {
+      const payload = await requestMutation(
+        { type: 'import', data: importDialog.data },
+        collection.revision,
+      )
+      applyPayload(payload)
+      setImportDialog(null)
+      setQuery('')
+      setConfirmingId(null)
+      setSummaryOpen(false)
+
+      const info = payload.imported ?? { groups: 0, lists: 0, bookmarks: 0, skipped: 0 }
+      const parts = []
+      if (info.bookmarks > 0) parts.push(t('import.done', { n: info.bookmarks }))
+      if (info.groups > 0 || info.lists > 0) {
+        parts.push(t('import.created', { g: info.groups, l: info.lists }))
+      }
+      if (info.skipped > 0) parts.push(t('import.skipped', { k: info.skipped }))
+      if (parts.length === 0) parts.push(t('import.nothing'))
+      setToast(parts.join(' · '))
+      focusLater(['[data-group-title="true"]', '.ar-group[data-active="true"]'])
+    } catch (error) {
+      if (handleMutationError(error)) return
+      if (error?.code === 'invalid-import') setImportError(t('import.invalid'))
+      else if (error?.code === 'request-too-large') setImportError(t('import.tooLarge'))
+      else setImportError(t('import.failed'))
+    } finally {
+      setBusy(false)
+    }
+  }, [
+    importDialog,
+    busy,
+    collection,
+    canMutate,
+    applyPayload,
+    focusLater,
+    handleMutationError,
+    t,
+  ])
 
   const deleteOne = useCallback(
     async (bookmarkId) => {
@@ -676,14 +939,23 @@ function Panel(props) {
     const onKeyDown = (event) => {
       if (event.key !== 'Escape') return
       if (dialog !== null || confirmingId !== null || summaryOpen) return
+      if (entryDialog !== null || importDialog !== null) return
       event.preventDefault()
       exitSelection()
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [selectionMode, dialog, confirmingId, summaryOpen, exitSelection])
+  }, [selectionMode, dialog, confirmingId, summaryOpen, entryDialog, importDialog, exitSelection])
 
-  const header = h(PageHeader, { t, query, onQueryChange: changeQuery, busy })
+  const header = h(PageHeader, {
+    t,
+    query,
+    onQueryChange: changeQuery,
+    busy,
+    canMutate,
+    onAddBookmark: openAddBookmark,
+    onImport: pickImportFile,
+  })
   const allListsOpen =
     activeGroup !== null &&
     activeLists.length > 0 &&
@@ -709,20 +981,96 @@ function Panel(props) {
     lastGroupIndexRef.current = groupIndex
   }, [groupIndex])
 
+  const entryDialogNode =
+    entryDialog === null
+      ? null
+      : h(AddBookmarkDialog, {
+          t,
+          groups,
+          activeGroupId: activeGroup === null ? null : activeGroup.id,
+          mode: entryDialog.mode,
+          fixedGroupId: entryDialog.groupId,
+          fixedListId: entryDialog.listId,
+          busy,
+          error: entryError,
+          onCancel: closeEntryDialog,
+          onConfirm: confirmAddBookmark,
+        })
+
+  const importDialogNode =
+    importDialog === null
+      ? null
+      : h(ImportDialog, {
+          t,
+          fileName: importDialog.fileName,
+          fileSize: importDialog.fileSize,
+          summary: importDialog.summary,
+          parseError: importDialog.parseError,
+          busy,
+          error: importError,
+          onCancel: closeImportDialog,
+          onPick: pickImportFile,
+          onConfirm: confirmImport,
+        })
+
+  let dialogNode = null
+  if (dialog !== null && dialog.type === 'delete') {
+    dialogNode = h(BatchDeleteDialog, {
+      t,
+      entries: dialogEntries,
+      busy,
+      error: dialogError,
+      onCancel: closeDialog,
+      onConfirm: confirmBatchDelete,
+    })
+  } else if (dialog !== null && dialog.type === 'move') {
+    dialogNode = h(MoveDialog, {
+      t,
+      groups,
+      activeGroupId: activeGroup === null ? null : activeGroup.id,
+      entries: dialogEntries,
+      busy,
+      error: dialogError,
+      onCancel: closeDialog,
+      onConfirm: confirmMove,
+    })
+  }
+
+  const fileInput = h('input', {
+    key: 'import-file',
+    ref: fileInputRef,
+    type: 'file',
+    accept: 'application/json,.json',
+    style: { display: 'none' },
+    onChange: (event) => {
+      const file = event.target.files !== null && event.target.files.length > 0
+        ? event.target.files[0]
+        : null
+      event.target.value = ''
+      if (file !== null) void handleImportFile(file)
+    },
+  })
+
+  const overlays = [fileInput, dialogNode, entryDialogNode, importDialogNode]
+  const toastNode =
+    toast === null ? null : h('div', { className: 'ar-toast', role: 'status' }, toast)
+  const dialogOpen = dialog !== null || entryDialog !== null || importDialog !== null
+
   if (status === 'loading') {
     return h(
       'div',
-      { className: 'ar-root' },
+      { className: 'ar-root', 'data-busy': busy ? 'true' : 'false' },
       h('style', { key: 'styles' }, CSS),
       header,
       h('div', { className: 'ar-state' }, t('status.loading')),
+      ...overlays,
     )
   }
 
   if (status === 'error') {
     return h(
       'div',
-      { className: 'ar-root' },
+      { className: 'ar-root', 'data-busy': busy ? 'true' : 'false' },
       h('style', { key: 'styles' }, CSS),
       header,
       h(
@@ -741,13 +1089,19 @@ function Panel(props) {
           t('retry'),
         ),
       ),
+      toastNode,
+      ...overlays,
     )
   }
 
   if (collection !== null && groups.length === 0) {
     return h(
       'div',
-      { className: 'ar-root' },
+      {
+        className: 'ar-root',
+        'data-dialog-open': dialogOpen ? 'true' : 'false',
+        'data-busy': busy ? 'true' : 'false',
+      },
       h('style', { key: 'styles' }, CSS),
       header,
       h(
@@ -766,6 +1120,8 @@ function Panel(props) {
           t('reload'),
         ),
       ),
+      toastNode,
+      ...overlays,
     )
   }
 
@@ -779,7 +1135,8 @@ function Panel(props) {
     activeGroupId: activeGroup === null ? null : activeGroup.id,
     selectionMode,
     busy,
-    dragDisabled: confirmingId !== null || dialog !== null,
+    dragDisabled:
+      confirmingId !== null || dialog !== null || entryDialog !== null || importDialog !== null,
     onSelect: selectGroup,
     onReorder: reorderGroups,
   })
@@ -886,7 +1243,9 @@ function Panel(props) {
               visibleListIds.length < 2 ||
               busy ||
               selectionMode ||
-              confirmingId !== null,
+              confirmingId !== null ||
+              entryDialog !== null ||
+              importDialog !== null,
             onReorder: reorderLists,
           },
           visibleLists.map((list) => {
@@ -905,6 +1264,7 @@ function Panel(props) {
               confirmingId,
               deleteBusy: busy,
               onToggle: () => toggleList(list.id),
+              onAdd: openAddToList,
               onOpen: openBookmark,
               onToggleSelect: toggleSelect,
               onRequestDelete: requestDeleteCard,
@@ -1013,44 +1373,21 @@ function Panel(props) {
       )
     : null
 
-  let dialogNode = null
-  if (dialog !== null && dialog.type === 'delete') {
-    dialogNode = h(BatchDeleteDialog, {
-      t,
-      entries: dialogEntries,
-      busy,
-      error: dialogError,
-      onCancel: closeDialog,
-      onConfirm: confirmBatchDelete,
-    })
-  } else if (dialog !== null && dialog.type === 'move') {
-    dialogNode = h(MoveDialog, {
-      t,
-      groups,
-      activeGroupId: activeGroup === null ? null : activeGroup.id,
-      entries: dialogEntries,
-      busy,
-      error: dialogError,
-      onCancel: closeDialog,
-      onConfirm: confirmMove,
-    })
-  }
-
   return h(
     'div',
     {
       className: 'ar-root',
       'data-select-mode': selectionMode ? 'true' : 'false',
       'data-bar-visible': selectionBarVisible ? 'true' : 'false',
-      'data-dialog-open': dialog !== null ? 'true' : 'false',
+      'data-dialog-open': dialogOpen ? 'true' : 'false',
       'data-busy': busy ? 'true' : 'false',
     },
     h('style', { key: 'styles' }, CSS),
     header,
     h('div', { className: 'ar-body' }, side, main),
     dock,
-    dialogNode,
-    toast === null ? null : h('div', { className: 'ar-toast', role: 'status' }, toast),
+    ...overlays,
+    toastNode,
   )
 }
 

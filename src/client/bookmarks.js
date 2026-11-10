@@ -2,7 +2,7 @@
 const React = require('react')
 const h = React.createElement
 const { useState, useEffect, useRef } = React
-const { Chevron, CheckGlyph, TrashGlyph } = require('./glyphs.js')
+const { Chevron, CheckGlyph, TrashGlyph, PlusGlyph } = require('./glyphs.js')
 const { Sortable } = require('./sortable.js')
 
 /** Keep in sync with the .16s exit animation in styles.js; 20ms covers a frame. */
@@ -321,6 +321,7 @@ function ListSection({
   confirmingId,
   deleteBusy,
   onToggle,
+  onAdd,
   onOpen,
   onToggleSelect,
   onRequestDelete,
@@ -356,6 +357,29 @@ function ListSection({
         inner,
       )
 
+  const addLabel = t('add.toListAria', { list: list.title })
+  const addButton =
+    canMutate === true
+      ? h(
+          'button',
+          {
+            type: 'button',
+            className: 'ar-sec__add',
+            title: addLabel,
+            'aria-label': addLabel,
+            'data-list-add': list.id,
+            'data-no-drag': '1',
+            disabled: busy === true,
+            onClick: (event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              onAdd(list.id)
+            },
+          },
+          h(PlusGlyph, { size: 14 }),
+        )
+      : null
+
   const bookmarkIds = list.bookmarks.map((bookmark) => bookmark.id)
   const gridDisabled =
     !sortable || selectionMode === true || busy === true || bookmarkIds.length < 2
@@ -368,7 +392,12 @@ function ListSection({
       'data-section-id': list.id,
       'aria-label': list.title,
     },
-    head,
+    h(
+      'div',
+      { className: 'ar-sec__headbar', 'data-add': canMutate === true ? 'true' : 'false' },
+      head,
+      addButton,
+    ),
     h(
       'div',
       { className: 'ar-sec__body' },

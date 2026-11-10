@@ -26,6 +26,9 @@ const DRAG_TRIGGER_DISTANCE = 24
 /** Touch movement before the hold completes cancels the drag, so scrolling works. */
 const TOUCH_SCROLL_TOLERANCE = 8
 
+/** Mirrors the Host's MAX_DATA_BYTES; larger imports are rejected before reading. */
+const MAX_IMPORT_BYTES = 8 * 1024 * 1024
+
 /** Candy hues cycled by the left rail and the right column's group title. */
 const TONE_COUNT = 8
 
@@ -40,5 +43,6 @@ module.exports = {
   HOLD_MS,
   DRAG_TRIGGER_DISTANCE,
   TOUCH_SCROLL_TOLERANCE,
+  MAX_IMPORT_BYTES,
   TONE_COUNT,
 }

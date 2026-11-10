@@ -113,4 +113,37 @@ function CloseGlyph({ size }) {
   )
 }
 
-module.exports = { ArchiveGlyph, Chevron, SearchGlyph, PanelIcon, TrashGlyph, CheckGlyph, CloseGlyph }
+/** Add actions: the page header entry and each list's top-right affordance. */
+function PlusGlyph({ size }) {
+  return h(
+    Glyph,
+    { size: size === undefined ? 14 : size },
+    h('path', { d: 'M8 2.25V13.75' }),
+    h('path', { d: 'M2.25 8H13.75' }),
+  )
+}
+
+/** Import: an arrow dropping into a tray. */
+function ImportGlyph({ size }) {
+  return h(
+    Glyph,
+    { size: size === undefined ? 14 : size },
+    h('path', { d: 'M8 1.75V9.75' }),
+    h('path', { d: 'M4.75 6.75L8 10L11.25 6.75' }),
+    h('path', {
+      d: 'M2.25 10.25V13.25C2.25 13.5261 2.47386 13.75 2.75 13.75H13.25C13.5261 13.75 13.75 13.5261 13.75 13.25V10.25',
+    }),
+  )
+}
+
+module.exports = {
+  ArchiveGlyph,
+  Chevron,
+  SearchGlyph,
+  PanelIcon,
+  TrashGlyph,
+  CheckGlyph,
+  CloseGlyph,
+  PlusGlyph,
+  ImportGlyph,
+}
