@@ -34,8 +34,9 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-side__list{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:1px;padding:6px 8px 10px}
 .ar-side__foot{flex:none;display:flex;flex-direction:column;gap:1px;padding:10px 16px 12px;border-top:1px solid var(--ar-line);color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:16px;font-variant-numeric:tabular-nums}
 .ar-side__foot span{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.ar-group{position:relative;display:flex;align-items:center;gap:6px;width:100%;min-width:0;height:32px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none;transition:background-color .12s ease,color .12s ease}
-.ar-group:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+/* Keep a fixed 32px basis so a long group list scrolls instead of shrinking every row. */
+.ar-group{position:relative;display:flex;flex:0 0 32px;align-items:center;gap:6px;width:100%;min-width:0;height:32px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none;transition:background-color .12s ease,color .12s ease}
+.ar-group:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
 /* The selected group adds its own hue to the base surface: a tinted fill plus a
    2px accent rail on the left edge, so selection reads at a glance even while
    another row is hovered. */
@@ -76,7 +77,7 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-sec__headbar{position:relative;display:flex;align-items:center;height:32px}
 .ar-sec__head{position:relative;display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 36px 0 32px;border:0;border-radius:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;font-weight:600;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none}
 .ar-sec__headbar[data-add="false"] .ar-sec__head{padding-right:16px}
-button.ar-sec__head:hover,.ar-sec__headbar:hover button.ar-sec__head:not(:disabled){background:var(--dsw-alias-bg-layer-2)}
+button.ar-sec__head:hover,.ar-sec__headbar:hover button.ar-sec__head:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
 .ar-sec__head[data-static="true"]{cursor:default}
 button.ar-sec__head:disabled{cursor:default}
 button.ar-sec__head:disabled:hover{background:transparent}
