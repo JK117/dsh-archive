@@ -19,7 +19,9 @@ const { PageHeader } = require('./header.js')
 const { GroupRail } = require('./sidebar.js')
 const { ListSection } = require('./bookmarks.js')
 const { Sortable } = require('./sortable.js')
-const { TONE_COUNT, MAX_IMPORT_BYTES } = require('./constants.js')
+const { TONE_COUNT, MAX_IMPORT_BYTES, RAIL_WIDTH_MAX } = require('./constants.js')
+const { railCeiling, clampRailWidth, readSavedRailWidth, writeSavedRailWidth } = require('./rail.js')
+const { RailResizer } = require('./resizer.js')
 const { fetchLibrary, openBookmark: requestOpen, mutateLibrary: requestMutation } = require('./api.js')
 const {
   readSavedState,
@@ -77,6 +79,8 @@ function summarizeImport(parsed) {
 function Panel(props) {
   const t = props.t
   const [status, setStatus] = useState('loading')
+  const [railWidth, setRailWidth] = useState(readSavedRailWidth)
+  const [railMax, setRailMax] = useState(RAIL_WIDTH_MAX)
   const [collection, setCollection] = useState(null)
   const [activeGroupId, setActiveGroupId] = useState(null)
   const [expanded, setExpanded] = useState({})
@@ -97,7 +101,10 @@ function Panel(props) {
   const [summaryOpen, setSummaryOpen] = useState(false)
   const [focusRequest, setFocusRequest] = useState(null)
   const mainRef = useRef(null)
+  const bodyRef = useRef(null)
+  const railWidthRef = useRef(railWidth)
   const mountedRef = useRef(true)
+  railWidthRef.current = railWidth
   const countButtonRef = useRef(null)
   const cancelButtonRef = useRef(null)
   const moveButtonRef = useRef(null)
@@ -191,6 +198,34 @@ function Panel(props) {
   useLayoutEffect(() => {
     if (mainRef.current !== null) mainRef.current.scrollTop = 0
   }, [activeGroupId])
+
+  /* The divider is clamped against the live body width, so a stored wide rail
+     can never squeeze the cards off-screen when the page itself is narrow. */
+  useLayoutEffect(() => {
+    const body = bodyRef.current
+    if (body === null) return undefined
+    const sync = () => {
+      const ceiling = railCeiling(body.clientWidth)
+      setRailMax(ceiling)
+      const next = clampRailWidth(railWidthRef.current, ceiling)
+      if (next !== railWidthRef.current) {
+        railWidthRef.current = next
+        writeSavedRailWidth(next)
+        setRailWidth(next)
+      }
+    }
+    sync()
+    if (typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver(sync)
+    observer.observe(body)
+    return () => observer.disconnect()
+  }, [status])
+
+  const changeRailWidth = useCallback((next) => {
+    railWidthRef.current = next
+    setRailWidth(next)
+  }, [])
+  const commitRailWidth = useCallback((next) => writeSavedRailWidth(next), [])
 
   useEffect(() => {
     if (focusRequest === null) return undefined
@@ -1377,6 +1412,7 @@ function Panel(props) {
     'div',
     {
       className: 'ar-root',
+      style: { '--ar-rail-width': `${railWidth}px` },
       'data-select-mode': selectionMode ? 'true' : 'false',
       'data-bar-visible': selectionBarVisible ? 'true' : 'false',
       'data-dialog-open': dialogOpen ? 'true' : 'false',
@@ -1384,7 +1420,19 @@ function Panel(props) {
     },
     h('style', { key: 'styles' }, CSS),
     header,
-    h('div', { className: 'ar-body' }, side, main),
+    h(
+      'div',
+      { className: 'ar-body', ref: bodyRef },
+      side,
+      h(RailResizer, {
+        t,
+        width: railWidth,
+        max: railMax,
+        onChange: changeRailWidth,
+        onCommit: commitRailWidth,
+      }),
+      main,
+    ),
     dock,
     ...overlays,
     toastNode,

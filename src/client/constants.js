@@ -32,6 +32,18 @@ const MAX_IMPORT_BYTES = 8 * 1024 * 1024
 /** Candy hues cycled by the left rail and the right column's group title. */
 const TONE_COUNT = 8
 
+/**
+ * The draggable divider between the group rail and the bookmarks column. The
+ * width lives in localStorage as a plain pixel number; the minimum main-column
+ * width keeps the grid readable when the panel itself is narrow.
+ */
+const RAIL_WIDTH_KEY = 'dsh-archive:rail:v1'
+const RAIL_WIDTH_DEFAULT = 240
+const RAIL_WIDTH_MIN = 160
+const RAIL_WIDTH_MAX = 420
+const RAIL_WIDTH_STEP = 8
+const MAIN_WIDTH_MIN = 300
+
 module.exports = {
   NS,
   PANEL_ID,
@@ -45,4 +57,10 @@ module.exports = {
   TOUCH_SCROLL_TOLERANCE,
   MAX_IMPORT_BYTES,
   TONE_COUNT,
+  RAIL_WIDTH_KEY,
+  RAIL_WIDTH_DEFAULT,
+  RAIL_WIDTH_MIN,
+  RAIL_WIDTH_MAX,
+  RAIL_WIDTH_STEP,
+  MAIN_WIDTH_MIN,
 }

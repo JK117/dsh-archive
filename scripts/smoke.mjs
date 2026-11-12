@@ -314,9 +314,31 @@ async function testStyles() {
   // Card layout: three title lines, and one centred row for favicon / checkbox / trash.
   assert.match(CSS, /\.ar-card\{[^}]*align-items:center/)
   assert.match(CSS, /\.ar-card\{[^}]*min-height:76px/)
+  assert.match(CSS, /\.ar-card\{[^}]*border:0/)
+  assert.match(CSS, /\.ar-card\{[^}]*box-shadow:var\(--dsw-shadow-lv1\)/)
   assert.match(CSS, /\.ar-card__title\{[^}]*-webkit-line-clamp:3/)
   assert.match(CSS, /\.ar-card__trash\{[^}]*top:50%/)
   assert.match(CSS, /\.ar-card__trash\{[^}]*translateY\(-50%\)/)
+  // Split handle: the rail no longer draws its own border; the handle's line
+  // is the divider and the body is its positioning context.
+  assert.match(CSS, /\.ar-body\{[^}]*position:relative/)
+  assert.match(CSS, /\.ar-resizer\{[^}]*left:var\(--ar-rail-width\)/)
+  assert.match(CSS, /\.ar-resizer\{[^}]*cursor:col-resize/)
+  assert.doesNotMatch(CSS, /\.ar-side\{[^}]*border-right/)
+}
+
+async function testRailSizing() {
+  const { clampRailWidth, railCeiling } = requireFromSource('./rail.js')
+  assert.equal(clampRailWidth(100), 160)
+  assert.equal(clampRailWidth(1000), 420)
+  assert.equal(clampRailWidth(300, 200), 200)
+  assert.equal(clampRailWidth(300, 100), 160)
+  assert.equal(clampRailWidth('wide'), 240)
+  assert.equal(railCeiling(1000), 420)
+  assert.equal(railCeiling(600), 300)
+  assert.equal(railCeiling(320), 160)
+  assert.equal(railCeiling(0), 420)
+  assert.equal(railCeiling(Number.NaN), 420)
 }
 
 async function testOrderHelpers() {
@@ -380,6 +402,15 @@ async function testStorage() {
     assert.deepEqual(order.groups, ['g1'])
     assert.deepEqual(order.lists, { g1: ['g1-l0'] })
     assert.deepEqual(order.bookmarks, { 'g1-l0': ['x'] })
+
+    const { readSavedRailWidth, writeSavedRailWidth } = requireFromSource('./rail.js')
+    assert.equal(readSavedRailWidth(), 240)
+    writeSavedRailWidth(300)
+    assert.equal(readSavedRailWidth(), 300)
+    writeSavedRailWidth(999)
+    assert.equal(readSavedRailWidth(), 420)
+    store.set('dsh-archive:rail:v1', 'null')
+    assert.equal(readSavedRailWidth(), 240)
   } finally {
     delete globalThis.window
   }
@@ -907,6 +938,7 @@ await test('mutations', testMutations)
 await test('create and import', testCreateAndImport)
 await test('client bundle', testClientBundle)
 await test('styles', testStyles)
+await test('rail sizing', testRailSizing)
 await test('order helpers', testOrderHelpers)
 await test('selection helpers', testSelectionHelpers)
 await test('local storage', testStorage)

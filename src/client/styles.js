@@ -1,10 +1,11 @@
 /**
  * The panel stylesheet. Only `--dsw-alias-*` theme tokens are used for
  * surfaces, text, and borders, so light and dark themes stay consistent.
- * Dividers derive their weight from the theme tokens as well; one soft shadow
- * is the only literal colour, matching the other plugin panels.
+ * Dividers derive their weight from the theme tokens as well; cards use the
+ * host's shadow tokens, while floating surfaces keep the soft shadows the
+ * other plugin panels use.
  */
-const CSS = `.ar-root{position:relative;box-sizing:border-box;display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;padding-top:var(--dsh-frame-top-clearance,0px);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;--ar-line:var(--dsw-alias-border-l1);--ar-line-strong:var(--dsw-alias-border-l2);--ar-card-lift:3%;--ar-card-lift-hover:6%;--ar-danger:var(--dsw-alias-state-error-primary)}
+const CSS = `.ar-root{position:relative;box-sizing:border-box;display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;padding-top:var(--dsh-frame-top-clearance,0px);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;--ar-line:var(--dsw-alias-border-l1);--ar-line-strong:var(--dsw-alias-border-l2);--ar-rail-width:240px;--ar-content-inset:24px;--ar-card-lift:3%;--ar-card-lift-hover:6%;--ar-danger:var(--dsw-alias-state-error-primary)}
 /* Light surfaces read darker than dark ones at the same mix step, so the light theme lifts much less. The host flags dark mode on <body>. */
 body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-root *,.ar-root *::before,.ar-root *::after{box-sizing:border-box}
@@ -27,13 +28,20 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-search__input{width:100%;height:100%;padding:0 8px 0 26px;border:0;border-radius:inherit;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;outline:none}
 .ar-search__input::placeholder{color:var(--dsw-alias-label-secondary);opacity:.85}
 .ar-search__input:disabled{opacity:.6}
-.ar-body{display:flex;flex:1;min-height:0}
+.ar-body{position:relative;display:flex;flex:1;min-height:0}
 /* Left rail. Its band header shares one height with the right column's, so both lists start on the same line. */
-.ar-side{flex:none;display:flex;flex-direction:column;width:220px;min-height:0;border-right:1px solid var(--ar-line-strong)}
+.ar-side{flex:none;display:flex;flex-direction:column;width:var(--ar-rail-width);min-height:0}
 .ar-side__head{flex:none;display:flex;align-items:center;gap:6px;height:40px;padding:0 16px;border-bottom:1px solid var(--ar-line);color:var(--dsw-alias-label-secondary);font-size:11.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
 .ar-side__list{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:1px;padding:6px 8px 10px}
 .ar-side__foot{flex:none;display:flex;flex-direction:column;gap:1px;padding:10px 16px 12px;border-top:1px solid var(--ar-line);color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:16px;font-variant-numeric:tabular-nums}
 .ar-side__foot span{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+/* The split handle sits on the divider, extending only into the right column's
+   padding so the group list keeps its scrollbar. The 10px strip is the hit
+   target; the visible line remains a hairline until hover / focus / drag. */
+.ar-resizer{position:absolute;top:0;bottom:0;left:var(--ar-rail-width);z-index:5;width:10px;cursor:col-resize;touch-action:none;outline:none}
+.ar-resizer::before{content:"";position:absolute;top:0;bottom:0;left:0;width:1px;background:var(--ar-line-strong);transition:width .12s ease,background-color .12s ease}
+.ar-resizer:hover::before,.ar-resizer:focus-visible::before,.ar-resizer[data-dragging="true"]::before{width:2px;background:var(--dsw-alias-brand-primary)}
+.ar-resizer:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px;border-radius:0 3px 3px 0}
 /* Keep a fixed 32px basis so a long group list scrolls instead of shrinking every row. */
 .ar-group{position:relative;display:flex;flex:0 0 32px;align-items:center;gap:6px;width:100%;min-width:0;height:32px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none;transition:background-color .12s ease,color .12s ease}
 .ar-group:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
@@ -50,14 +58,14 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-group[data-active="true"] .ar-group__name{font-weight:700}
 .ar-group__count{flex:none;font-size:11.5px;font-variant-numeric:tabular-nums;opacity:.85}
 .ar-group__sel{flex:none;display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted);font-size:10px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
-/* Right column: one band header, then the group's lists. Text sits on the 32px rail used by section titles. */
+/* Right column: one band header, then the group's lists. Text sits on the content rail used by section titles. */
 .ar-main{flex:1;min-width:0;min-height:0;overflow-x:hidden;overflow-y:auto;scrollbar-gutter:stable;padding:0 0 40px}
 .ar-root[data-bar-visible="true"] .ar-main{padding-bottom:90px}
 /* A group switch remounts this wrapper (keyed by group id), replaying the entry animation. */
 .ar-view{min-height:100%;display:flex;flex-direction:column;animation:ar-view-in .26s cubic-bezier(.2,.7,.2,1) both}
 .ar-view[data-dir="up"]{--ar-shift:-6px}
 .ar-view[data-dir="down"]{--ar-shift:6px}
-.ar-main__head{flex:none;display:flex;align-items:center;gap:12px;height:40px;padding:0 16px 0 32px;border-bottom:1px solid var(--ar-line)}
+.ar-main__head{flex:none;display:flex;align-items:center;gap:12px;height:40px;padding:0 16px 0 var(--ar-content-inset);border-bottom:1px solid var(--ar-line)}
 .ar-main__titles{flex:1;min-width:0;display:flex;align-items:center;gap:8px}
 .ar-main__title{flex:0 1 auto;min-width:0;margin:0;font-size:16px;line-height:22px;font-weight:600;letter-spacing:-.005em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ar-group-ink,var(--dsw-alias-label-primary));outline:none}
 .ar-main__meta{flex:none;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -75,7 +83,7 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-sections>.ar-sec{border-top:1px solid var(--ar-line)}
 .ar-sections>.ar-sec:first-child{border-top:0}
 .ar-sec__headbar{position:relative;display:flex;align-items:center;height:32px}
-.ar-sec__head{position:relative;display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 36px 0 32px;border:0;border-radius:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;font-weight:600;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none}
+.ar-sec__head{position:relative;display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 36px 0 var(--ar-content-inset);border:0;border-radius:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;font-weight:600;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none}
 .ar-sec__headbar[data-add="false"] .ar-sec__head{padding-right:16px}
 button.ar-sec__head:hover,.ar-sec__headbar:hover button.ar-sec__head:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
 .ar-sec__head[data-static="true"]{cursor:default}
@@ -94,7 +102,7 @@ button.ar-sec__head:disabled:hover{background:transparent}
 .ar-sec__body{display:grid;grid-template-rows:0fr;visibility:hidden;transition:grid-template-rows .24s cubic-bezier(.2,.7,.2,1),visibility 0s linear .24s}
 .ar-sec[data-open="true"] .ar-sec__body{grid-template-rows:1fr;visibility:visible;transition:grid-template-rows .24s cubic-bezier(.2,.7,.2,1),visibility 0s}
 .ar-sec__inner{min-height:0;overflow:hidden}
-.ar-sec__empty{padding:8px 16px 12px 32px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.ar-sec__empty{padding:8px 16px 12px var(--ar-content-inset);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
 /* One candy hue per group, cycling. The group title takes the saturated ink, its lists take a
    desaturated ink of the same hue, so colour alone shows the parent/child relation. OKLCH fixes the
    perceived lightness across hues; mixing with the theme's primary label keeps both themes readable. */
@@ -107,17 +115,17 @@ button.ar-sec__head:disabled:hover{background:transparent}
 .ar-root [data-tone="5"]{--ar-hue:240}
 .ar-root [data-tone="6"]{--ar-hue:285}
 .ar-root [data-tone="7"]{--ar-hue:330}
-.ar-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:10px;padding:6px 16px 12px 32px}
+.ar-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:10px;padding:6px 16px 12px var(--ar-content-inset)}
 .ar-sec[data-open="true"] .ar-grid{animation:ar-fade-in .2s ease both}
 .ar-sec:not([data-open="true"]) .ar-grid{opacity:0;transition:opacity .18s ease}
 /* The card is a positioning context: a transparent full-card anchor carries the
    native link behaviour, while the checkbox / trash / confirm layer sit above it
    as real buttons. Buttons must never be nested inside the anchor. */
-.ar-card{position:relative;display:flex;align-items:center;gap:9px;min-width:0;min-height:76px;padding:11px 34px 11px 12px;border:.5px solid var(--ar-line);border-radius:10px;background:color-mix(in oklab,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) calc(100% - var(--ar-card-lift)),var(--dsw-alias-label-primary) var(--ar-card-lift));color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px;user-select:none;-webkit-touch-callout:none;-webkit-user-drag:none;transition:border-color .16s ease,background-color .16s ease}
-/* Card surface = the sidebar fill nudged a fixed step towards the theme's text colour, so any theme (even one whose fill equals its base) keeps a visible card/background delta. Tune it with the --ar-card-lift variables on .ar-root. */
-.ar-card:hover{border-color:var(--dsw-alias-border-l2);background:color-mix(in oklab,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) calc(100% - var(--ar-card-lift-hover)),var(--dsw-alias-label-primary) var(--ar-card-lift-hover))}
-.ar-card[data-selected="true"]{border-color:var(--dsw-alias-brand-primary);background:color-mix(in oklab,var(--dsw-alias-brand-primary) 9%,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) 91%)}
-.ar-card[data-selected="true"]:hover{border-color:var(--dsw-alias-brand-primary);background:color-mix(in oklab,var(--dsw-alias-brand-primary) 13%,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) 87%)}
+.ar-card{position:relative;display:flex;align-items:center;gap:9px;min-width:0;min-height:76px;padding:11px 34px 11px 12px;border:0;border-radius:10px;box-shadow:var(--dsw-shadow-lv1);background:color-mix(in oklab,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) calc(100% - var(--ar-card-lift)),var(--dsw-alias-label-primary) var(--ar-card-lift));color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px;user-select:none;-webkit-touch-callout:none;-webkit-user-drag:none;transition:box-shadow .16s ease,background-color .16s ease}
+/* Card surface = the sidebar fill nudged a fixed step towards the theme's text colour, so any theme (even one whose fill equals its base) keeps a visible card/background delta. Tune it with the --ar-card-lift variables on .ar-root. The card has no border: a level-1 shadow lifts it off the canvas, and hover deepens the shadow instead of darkening an outline. */
+.ar-card:hover{box-shadow:var(--dsw-shadow-lv2);background:color-mix(in oklab,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) calc(100% - var(--ar-card-lift-hover)),var(--dsw-alias-label-primary) var(--ar-card-lift-hover))}
+.ar-card[data-selected="true"]{box-shadow:inset 0 0 0 1px var(--dsw-alias-brand-primary),var(--dsw-shadow-lv1);background:color-mix(in oklab,var(--dsw-alias-brand-primary) 9%,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) 91%)}
+.ar-card[data-selected="true"]:hover{box-shadow:inset 0 0 0 1px var(--dsw-alias-brand-primary),var(--dsw-shadow-lv2);background:color-mix(in oklab,var(--dsw-alias-brand-primary) 13%,var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base)) 87%)}
 .ar-card__link{position:absolute;inset:0;z-index:0;display:block;border-radius:inherit;text-decoration:none}
 .ar-card__link:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
 .ar-card[data-confirming="true"] .ar-card__link{pointer-events:none}
@@ -182,7 +190,7 @@ button.ar-sec__head:disabled:hover{background:transparent}
 .ar-root[data-select-mode="true"] .ar-toast,.ar-root[data-dialog-open="true"] .ar-toast{opacity:0;pointer-events:none}
 /* Floating bulk-action dock: the summary stacks above the bar. The dock itself
    is click-through so the area beside the pill stays usable. */
-.ar-bar-dock{position:absolute;z-index:1100;left:220px;right:0;bottom:16px;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
+.ar-bar-dock{position:absolute;z-index:1100;left:var(--ar-rail-width);right:0;bottom:16px;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
 .ar-bar{pointer-events:auto;display:flex;align-items:center;gap:8px;max-width:calc(100% - 32px);height:44px;padding:0 8px 0 14px;border:1px solid var(--ar-line-strong);border-radius:999px;background:var(--dsw-alias-bg-overlay);box-shadow:0 12px 32px rgba(0,0,0,.22);animation:ar-bar-in .18s cubic-bezier(.2,.7,.2,1) both}
 .ar-bar__count{min-width:0;max-width:56%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:0 6px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:28px;cursor:pointer;font-variant-numeric:tabular-nums}
 .ar-bar__count:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
@@ -249,6 +257,7 @@ button.ar-sec__head:disabled:hover{background:transparent}
 @keyframes ar-modal-in{from{opacity:0;transform:translateY(4px) scale(.985)}}
 .ar-toast{animation:ar-fade-in .16s ease both}
 @media (max-width:720px){.ar-bar-dock{left:0}.ar-modal{padding:12px}.ar-modal__panel{width:100%}}
-@media (prefers-reduced-motion:reduce){.ar-toast,.ar-view,.ar-sec__body,.ar-sec__chev,.ar-grid,.ar-card,.ar-card__check,.ar-card__trash,.ar-card__confirm,.ar-card__confirm[data-leaving="true"],.ar-bar,.ar-summary,.ar-modal,.ar-modal__panel{animation:none;transition:none}}`
+@media (pointer:coarse){.ar-resizer{width:18px}}
+@media (prefers-reduced-motion:reduce){.ar-toast,.ar-view,.ar-sec__body,.ar-sec__chev,.ar-grid,.ar-card,.ar-card__check,.ar-card__trash,.ar-card__confirm,.ar-card__confirm[data-leaving="true"],.ar-bar,.ar-summary,.ar-modal,.ar-modal__panel,.ar-resizer::before{animation:none;transition:none}}`
 
 module.exports = { CSS }
