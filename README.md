@@ -6,7 +6,7 @@ DSH 全局面板插件：把插件自带的一份书签库渲染成两级资料�
 - 布局：页头（一级标题「资料库」+ 新增 / 导入按钮 + 搜索框）→ 主体左右分栏；左栏默认 `240px`（分组列表 + 底部规模统计，可在 `160–420px` 间拖动调整，双击复位），右栏自适应并独立滚动。左右两栏的栏头同高（`40px`）、同一条基线上，列表起点也对齐；右栏的分组标题与下方列表标题文字左边缘对齐（`24px` 栏线）。两个值收敛为 `.ar-root` 上的 `--ar-rail-width` / `--ar-content-inset`，底部批量操作栏的左侧起点也复用同一个栏宽。
 - 字号层级：页头 `18px` ＞ 右栏分组标题 `16px` ＞ 列表标题 `14px` ＞ 左栏分组名 / 卡片 `13px` ＞ 元信息 `12px`。
 - 图标：面板内所有 glyph 统一采用宿主 Web UI 的 16×16 线性图标集——`@deepseek-ai/dsh-client-ui-primitives` 中的 `archive-outline` / `chevron-right-outline` / `search-outline` / `trash-outline` / `check-outline` / `close-outline` / `ellipsis-outline` / `edit-outline`，Regular 权重为 `1px` 描边、Medium 为 `1.3px`。路径数据内联在 `src/client/glyphs.js`，插件 bundle 保持自包含、不新增 Host 包依赖；侧栏面板图标沿用同一 archive 几何，打开时切换为 Medium。图标尺寸也按宿主惯例：列表箭头 / 搜索 / 垃圾桶 / 更多菜单 / 重命名 `14px`，勾选框与已选清单关闭 `12px`，页头与侧栏 archive `20px`。分组标题和列表标题右侧的更多操作都使用宿主菜单同款的三个实心圆点。
-- 数据：首次加载即带一份真实书签库（`data/bookmarks.json`，39 个分组 / 173 个列表 / 490 个书签）。
+- 数据：首次加载即带一份真实书签库（`data/bookmarks.json`，39 个分组 / 173 个列表 / 460 个书签）。
 - 语言：界面文案走 Client locale，中文 / English 各一份；跟随 DSH 语言设置。
 - 主题：只用宿主主题 token（`--dsw-alias-*` 与 `--dsw-shadow-*`），明暗主题都跟随宿主。
 
