@@ -19,6 +19,8 @@ const { PageHeader } = require('./header.js')
 const { GroupRail } = require('./sidebar.js')
 const { ListSection } = require('./bookmarks.js')
 const { Sortable } = require('./sortable.js')
+const { MoreMenu } = require('./menu.js')
+const { EditGlyph, TrashGlyph } = require('./glyphs.js')
 const { TONE_COUNT, MAX_IMPORT_BYTES, RAIL_WIDTH_MAX } = require('./constants.js')
 const { railCeiling, clampRailWidth, readSavedRailWidth, writeSavedRailWidth } = require('./rail.js')
 const { RailResizer } = require('./resizer.js')
@@ -36,6 +38,7 @@ const {
   collectionSignature,
   countGroupMatches,
   pruneOrder,
+  pruneExpanded,
   orderListBookmarks,
   filterListBookmarks,
 } = require('./order.js')
@@ -47,8 +50,24 @@ const {
   hiddenByQuery,
   targetStats,
   entryMap,
+  pruneSelected,
 } = require('./selection.js')
-const { BatchDeleteDialog, MoveDialog, SelectionSummary, AddBookmarkDialog, ImportDialog } = require('./dialogs.js')
+const {
+  renameMaps,
+  remapId,
+  remapOrderForRename,
+  remapExpandedForRename,
+  remapSelectedForRename,
+} = require('./remap.js')
+const {
+  BatchDeleteDialog,
+  StructureDeleteDialog,
+  RenameDialog,
+  MoveDialog,
+  SelectionSummary,
+  AddBookmarkDialog,
+  ImportDialog,
+} = require('./dialogs.js')
 
 /** A quick, tolerant shape count for the import confirmation, not validation. */
 function summarizeImport(parsed) {
@@ -276,10 +295,6 @@ function Panel(props) {
     () => visibleLists.map((list) => list.id),
     [visibleLists],
   )
-  const visibleCardCount = useMemo(
-    () => visibleLists.reduce((total, list) => total + list.bookmarks.length, 0),
-    [visibleLists],
-  )
   const groupMatches = useMemo(
     () => countGroupMatches(groups, queryText),
     [groups, queryText],
@@ -298,7 +313,7 @@ function Panel(props) {
   const selectionSummaryOpen = summaryOpen && entries.length > 0
 
   const dialogEntries = useMemo(() => {
-    if (dialog === null) return []
+    if (dialog === null || !Array.isArray(dialog.ids)) return []
     const lookup = entryMap(entries)
     return dialog.ids.map((id) => lookup.get(id)).filter(Boolean)
   }, [dialog, entries])
@@ -313,14 +328,48 @@ function Panel(props) {
     setFocusRequest({ selectors, nonce: Date.now() + Math.random() })
   }, [])
 
-  const applyPayload = useCallback((payload) => {
+  const applyPayload = useCallback((payload, preferredGroupId) => {
     setCollection(payload)
     setOrder((current) => pruneOrder(current, payload))
-    setActiveGroupId((current) =>
-      payload.groups.some((group) => group.id === current)
+    setActiveGroupId((current) => {
+      if (
+        preferredGroupId !== undefined &&
+        preferredGroupId !== null &&
+        payload.groups.some((group) => group.id === preferredGroupId)
+      ) {
+        return preferredGroupId
+      }
+      return payload.groups.some((group) => group.id === current)
         ? current
-        : payload.groups[0]?.id ?? null,
+        : payload.groups[0]?.id ?? null
+    })
+  }, [])
+
+  /**
+   * A rename changes the content-derived ids of everything below the renamed
+   * node, so the local selection, expansion, and drag order must be carried
+   * over with the Host's old→new pairs instead of being pruned away.
+   */
+  const applyRenamePayload = useCallback((payload, renamed) => {
+    const maps = renameMaps(renamed)
+    setCollection(payload)
+    setOrder((current) => pruneOrder(remapOrderForRename(current, renamed), payload))
+    setExpanded((current) => remapExpandedForRename(current, renamed))
+    setSelected((current) => remapSelectedForRename(current, renamed))
+    setConfirmingId((current) =>
+      current === null ? null : remapId(current, maps.bookmarks),
     )
+    setActiveGroupId((current) => {
+      if (
+        typeof renamed?.groupId === 'string' &&
+        payload.groups.some((group) => group.id === renamed.groupId)
+      ) {
+        return renamed.groupId
+      }
+      return payload.groups.some((group) => group.id === current)
+        ? current
+        : payload.groups[0]?.id ?? null
+    })
   }, [])
 
   const resetInteraction = useCallback(() => {
@@ -804,6 +853,162 @@ function Panel(props) {
     setDialogError('')
   }, [busy, entries, canMutate])
 
+  const openStructureDialog = useCallback(
+    (type, group, list, trigger) => {
+      if (busy || !canMutate || group === null) return
+      if (trigger !== undefined && trigger !== null) dialogTriggerRef.current = trigger
+      if (type === 'rename-group' || type === 'delete-group') {
+        setDialog({ type, groupId: group.id, name: group.name })
+      } else {
+        setDialog({ type, groupId: group.id, listId: list.id, title: list.title })
+      }
+      setDialogError('')
+      setSummaryOpen(false)
+    },
+    [busy, canMutate],
+  )
+
+  const confirmRename = useCallback(
+    async (name) => {
+      if (
+        dialog === null ||
+        (dialog.type !== 'rename-group' && dialog.type !== 'rename-list') ||
+        busy ||
+        collection === null ||
+        !canMutate
+      ) {
+        return
+      }
+
+      const isGroup = dialog.type === 'rename-group'
+      const op = isGroup
+        ? { type: 'rename-group', groupId: dialog.groupId, name }
+        : {
+            type: 'rename-list',
+            groupId: dialog.groupId,
+            listId: dialog.listId,
+            title: name,
+          }
+
+      setBusy(true)
+      setDialogError('')
+      try {
+        const payload = await requestMutation(op, collection.revision)
+        if (payload.renamed !== undefined) applyRenamePayload(payload, payload.renamed)
+        else applyPayload(payload)
+
+        setDialog(null)
+        setDialogError('')
+        setToast(t(isGroup ? 'rename.done.group' : 'rename.done.list'))
+        if (isGroup) {
+          focusLater(['.ar-group[data-active="true"]', '[data-group-title="true"]'])
+        } else {
+          const listId = payload.renamed?.listId ?? dialog.listId
+          focusLater([
+            '[data-list-head="' + listId + '"]',
+            '[data-group-title="true"]',
+            '.ar-search__input',
+          ])
+        }
+      } catch (error) {
+        if (handleMutationError(error)) return
+        if (error?.code === 'duplicate-group') setDialogError(t('rename.duplicateGroup'))
+        else if (error?.code === 'duplicate-list') setDialogError(t('rename.duplicateList'))
+        else setDialogError(t('rename.failed'))
+      } finally {
+        setBusy(false)
+      }
+    },
+    [
+      dialog,
+      busy,
+      collection,
+      canMutate,
+      applyRenamePayload,
+      applyPayload,
+      focusLater,
+      handleMutationError,
+      t,
+    ],
+  )
+
+  const confirmDeleteStructure = useCallback(async () => {
+    if (
+      dialog === null ||
+      (dialog.type !== 'delete-group' && dialog.type !== 'delete-list') ||
+      busy ||
+      collection === null ||
+      !canMutate
+    ) {
+      return
+    }
+
+    const isGroup = dialog.type === 'delete-group'
+    const name = isGroup ? dialog.name ?? '' : dialog.title ?? ''
+
+    let neighbourGroupId = null
+    let neighbourList = null
+    if (isGroup) {
+      const at = groups.findIndex((group) => group.id === dialog.groupId)
+      const neighbour = at === -1 ? null : groups[at + 1] ?? groups[at - 1] ?? null
+      neighbourGroupId = neighbour === null ? null : neighbour.id
+    } else {
+      const at = visibleLists.findIndex((list) => list.id === dialog.listId)
+      neighbourList =
+        at === -1 ? null : visibleLists[at + 1] ?? visibleLists[at - 1] ?? null
+    }
+
+    setBusy(true)
+    setDialogError('')
+    try {
+      const payload = await requestMutation(
+        isGroup
+          ? { type: 'delete-group', groupId: dialog.groupId }
+          : { type: 'delete-list', groupId: dialog.groupId, listId: dialog.listId },
+        collection.revision,
+      )
+
+      applyPayload(payload, isGroup ? neighbourGroupId : undefined)
+      setExpanded((current) => pruneExpanded(current, payload))
+      const kept = pruneSelected(selected, payload)
+      setSelected(kept)
+      if (kept.size === 0) {
+        setSelectionMode(false)
+        setSummaryOpen(false)
+      }
+      setConfirmingId(null)
+      setDialog(null)
+      setDialogError('')
+      setToast(t(isGroup ? 'delete.done.group' : 'delete.done.list', { name }))
+
+      const selectors = []
+      if (isGroup) {
+        selectors.push('.ar-group[data-active="true"]', '[data-group-title="true"]')
+      } else if (neighbourList !== null) {
+        selectors.push('[data-list-head="' + neighbourList.id + '"]')
+      }
+      selectors.push('[data-group-title="true"]', '.ar-search__input')
+      focusLater(selectors)
+    } catch (error) {
+      if (handleMutationError(error)) return
+      setDialogError(t('delete.failed'))
+    } finally {
+      setBusy(false)
+    }
+  }, [
+    dialog,
+    busy,
+    collection,
+    canMutate,
+    groups,
+    visibleLists,
+    selected,
+    applyPayload,
+    focusLater,
+    handleMutationError,
+    t,
+  ])
+
   const closeDialog = useCallback(() => {
     if (busy) return
     const trigger = dialogTriggerRef.current
@@ -814,20 +1019,23 @@ function Panel(props) {
     }
   }, [busy])
 
-  const enterSelection = useCallback(() => {
-    if (busy || !canMutate) return
-    setSelectionMode(true)
-    setSummaryOpen(false)
-  }, [busy, canMutate])
+  const exitSelection = useCallback(
+    (bookmarkId) => {
+      if (busy) return
+      setSelectionMode(false)
+      setSelected(new Set())
+      setSummaryOpen(false)
+      setConfirmingId(null)
 
-  const exitSelection = useCallback(() => {
-    if (busy) return
-    setSelectionMode(false)
-    setSelected(new Set())
-    setSummaryOpen(false)
-    setConfirmingId(null)
-    focusLater(['.ar-main__select', '[data-group-title="true"]'])
-  }, [busy, focusLater])
+      const selectors = []
+      if (typeof bookmarkId === 'string') {
+        selectors.push('[data-focus-id="' + bookmarkId + '"]')
+      }
+      selectors.push('.ar-group[data-active="true"]', '[data-group-title="true"]')
+      focusLater(selectors)
+    },
+    [busy, focusLater],
+  )
 
   const toggleSelect = useCallback(
     (bookmarkId) => {
@@ -836,7 +1044,7 @@ function Panel(props) {
       // Unchecking the last card ends selection mode, so the grid returns to
       // browsing and the bar goes away with it.
       if (next.size === 0) {
-        exitSelection()
+        exitSelection(bookmarkId)
         return
       }
       setSelected(next)
@@ -1069,6 +1277,81 @@ function Panel(props) {
       onCancel: closeDialog,
       onConfirm: confirmMove,
     })
+  } else if (
+    dialog !== null &&
+    (dialog.type === 'rename-group' || dialog.type === 'rename-list')
+  ) {
+    const isGroup = dialog.type === 'rename-group'
+    const group =
+      collection === null
+        ? null
+        : collection.groups.find((candidate) => candidate.id === dialog.groupId) ?? null
+    const list =
+      group === null || isGroup
+        ? null
+        : group.lists.find((candidate) => candidate.id === dialog.listId) ?? null
+    dialogNode = h(RenameDialog, {
+      t,
+      scope: isGroup ? 'group' : 'list',
+      value: isGroup
+        ? group?.name ?? dialog.name ?? ''
+        : list?.title ?? dialog.title ?? '',
+      busy,
+      error: dialogError,
+      onCancel: closeDialog,
+      onConfirm: confirmRename,
+      onDirty: () => setDialogError(''),
+    })
+  } else if (
+    dialog !== null &&
+    (dialog.type === 'delete-group' || dialog.type === 'delete-list')
+  ) {
+    const isGroup = dialog.type === 'delete-group'
+    const group =
+      collection === null
+        ? null
+        : collection.groups.find((candidate) => candidate.id === dialog.groupId) ?? null
+    const orderedLists =
+      group === null ? [] : listsByGroup.get(group.id) ?? group.lists
+    const list =
+      group === null || isGroup
+        ? null
+        : orderedLists.find((candidate) => candidate.id === dialog.listId) ?? null
+
+    let rows = []
+    let more = ''
+    if (isGroup) {
+      rows = orderedLists.slice(0, 4).map((candidate) => ({
+        path: t('count.bookmarks', { n: candidate.count }),
+        title: candidate.title,
+      }))
+      if (orderedLists.length > rows.length) {
+        more = t('delete.moreItems', { n: orderedLists.length - rows.length })
+      }
+    } else if (list !== null) {
+      const orderedBookmarks = orderListBookmarks(list, order).bookmarks
+      rows = orderedBookmarks.slice(0, 4).map((bookmark) => ({
+        path: '',
+        title: bookmark.title,
+      }))
+      if (orderedBookmarks.length > rows.length) {
+        more = t('delete.moreItems', { n: orderedBookmarks.length - rows.length })
+      }
+    }
+
+    dialogNode = h(StructureDeleteDialog, {
+      t,
+      scope: isGroup ? 'group' : 'list',
+      name: isGroup ? group?.name ?? dialog.name ?? '' : list?.title ?? dialog.title ?? '',
+      lists: orderedLists.length,
+      bookmarks: isGroup ? group?.count ?? 0 : list?.count ?? 0,
+      rows,
+      more,
+      busy,
+      error: dialogError,
+      onCancel: closeDialog,
+      onConfirm: confirmDeleteStructure,
+    })
   }
 
   const fileInput = h('input', {
@@ -1180,7 +1463,6 @@ function Panel(props) {
 
   if (activeGroup !== null) {
     const showExpand = queryText === '' && activeLists.length > 0
-    const showSelect = canMutate && (selectionMode || visibleCardCount > 0)
     const meta =
       queryText === ''
         ? [
@@ -1210,7 +1492,7 @@ function Panel(props) {
           ),
           h('div', { className: 'ar-main__meta' }, meta),
         ),
-        showExpand || showSelect
+        showExpand || canMutate
           ? h(
               'div',
               { className: 'ar-main__actions' },
@@ -1226,18 +1508,28 @@ function Panel(props) {
                     allListsOpen ? t('collapseAll') : t('expandAll'),
                   )
                 : null,
-              showSelect
-                ? h(
-                    'button',
-                    {
-                      type: 'button',
-                      className: 'ar-btn ar-main__select',
-                      'data-active': selectionMode ? 'true' : undefined,
-                      disabled: busy,
-                      onClick: selectionMode ? exitSelection : enterSelection,
-                    },
-                    selectionMode ? t('select.exit') : t('select'),
-                  )
+              canMutate
+                ? h(MoreMenu, {
+                    label: t('menu.groupAria', { name: activeGroup.name }),
+                    disabled: busy,
+                    items: [
+                      {
+                        id: 'rename',
+                        label: t('menu.rename'),
+                        icon: h(EditGlyph, { size: 14 }),
+                        onSelect: (trigger) =>
+                          openStructureDialog('rename-group', activeGroup, null, trigger),
+                      },
+                      {
+                        id: 'delete',
+                        label: t('menu.deleteGroup'),
+                        icon: h(TrashGlyph, { size: 14 }),
+                        danger: true,
+                        onSelect: (trigger) =>
+                          openStructureDialog('delete-group', activeGroup, null, trigger),
+                      },
+                    ],
+                  })
                 : null,
             )
           : null,
@@ -1300,6 +1592,10 @@ function Panel(props) {
               deleteBusy: busy,
               onToggle: () => toggleList(list.id),
               onAdd: openAddToList,
+              onRename: (candidate, trigger) =>
+                openStructureDialog('rename-list', activeGroup, candidate, trigger),
+              onDelete: (candidate, trigger) =>
+                openStructureDialog('delete-list', activeGroup, candidate, trigger),
               onOpen: openBookmark,
               onToggleSelect: toggleSelect,
               onRequestDelete: requestDeleteCard,

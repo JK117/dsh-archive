@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { createRequire } from 'node:module'
+import Module, { createRequire } from 'node:module'
 import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
@@ -319,6 +319,22 @@ async function testStyles() {
   assert.match(CSS, /\.ar-card__title\{[^}]*-webkit-line-clamp:3/)
   assert.match(CSS, /\.ar-card__trash\{[^}]*top:50%/)
   assert.match(CSS, /\.ar-card__trash\{[^}]*translateY\(-50%\)/)
+  // The shared row menu: a compact trigger and the host menu material, with a
+  // danger item that reuses the same red token as every other delete action.
+  assert.match(CSS, /\.ar-more__trigger\{[^}]*width:22px/)
+  assert.match(CSS, /\.ar-menu\{[^}]*--dsw-menu-surface-fill/)
+  assert.match(CSS, /\.ar-menu__item\[data-danger="true"\]\{[^}]*var\(--ar-danger\)/)
+  assert.match(CSS, /\.ar-sec__tools\{[^}]*position:absolute/)
+  assert.doesNotMatch(CSS, /\.ar-sec__tools\{[^}]*transform/)
+  assert.match(CSS, /\.ar-sec__tools\{[^}]*right:16px/)
+  assert.doesNotMatch(CSS, /\.ar-main__actions \.ar-more__trigger\{[^}]*width:26px/)
+  assert.match(CSS, /\.ar-sec__head\{[^}]*padding:0 64px/)
+  assert.doesNotMatch(CSS, /\.ar-sec__count\{[^}]*margin-left:auto/)
+  assert.match(CSS, /\.ar-menu__item\{[^}]*height:28px/)
+  assert.match(CSS, /@media \(hover:hover\)\{[^}]*\.ar-more__trigger:hover/)
+  assert.doesNotMatch(CSS, /\.ar-main__select/)
+  assert.match(CSS, /@media \(pointer:coarse\)\{\.ar-resizer\{width:18px\}\.ar-card__check\{opacity:1/)
+  assert.doesNotMatch(CSS, /\.ar-sec__add\{[^}]*position:absolute/)
   // Split handle: the rail no longer draws its own border; the handle's line
   // is the divider and the body is its positioning context.
   assert.match(CSS, /\.ar-body\{[^}]*position:relative/)
@@ -342,7 +358,8 @@ async function testRailSizing() {
 }
 
 async function testOrderHelpers() {
-  const { applyOrder, moveId, collectionSignature, pruneOrder } = requireFromSource('./order.js')
+  const { applyOrder, moveId, collectionSignature, pruneOrder, pruneExpanded } =
+    requireFromSource('./order.js')
 
   const items = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
   assert.deepEqual(applyOrder(items, ['c', 'a']).map((item) => item.id), ['c', 'a', 'b'])
@@ -379,6 +396,21 @@ async function testOrderHelpers() {
     collection,
   )
   assert.deepEqual(pruned.bookmarks['g0-l0'], [keptId])
+  const fullyPruned = pruneOrder(
+    {
+      groups: ['g_gone', 'g0'],
+      lists: { g0: ['l_gone', 'g0-l0'], g_gone: ['l_gone'] },
+      bookmarks: { 'g0-l0': [keptId, 'b_gone'], l_gone: ['b_gone'] },
+    },
+    collection,
+  )
+  assert.deepEqual(fullyPruned.groups, ['g0'])
+  assert.deepEqual(fullyPruned.lists, { g0: ['g0-l0'] })
+  assert.deepEqual(fullyPruned.bookmarks, { 'g0-l0': [keptId] })
+  assert.deepEqual(
+    pruneExpanded({ 'g0-l0': false, 'l_gone': true }, collection),
+    { 'g0-l0': false },
+  )
 }
 
 async function testStorage() {
@@ -697,6 +729,325 @@ async function testCreateAndImport() {
   }
 }
 
+async function testStructureMutations() {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'dsh-archive-structure-'))
+  const file = path.join(dir, 'bookmarks.json')
+  try {
+    await writeFile(
+      file,
+      JSON.stringify(
+        {
+          groups: [
+            {
+              name: 'A',
+              lists: [
+                {
+                  title: 'L',
+                  bookmarks: [
+                    { title: 'x', url: 'https://x.example/' },
+                    { title: 'y', url: 'https://y.example/' },
+                  ],
+                },
+                { title: 'M', bookmarks: [{ title: 'z', url: 'https://z.example/' }] },
+              ],
+            },
+            { name: 'B', lists: [{ title: 'N', bookmarks: [] }] },
+          ],
+        },
+        null,
+        2,
+      ),
+    )
+
+    const store = createLibraryStore(file)
+    const first = await store.load()
+    const groupA = first.groups[0]
+    const listL = groupA.lists[0]
+    const oldBookmarkIds = listL.bookmarks.map((bookmark) => bookmark.id)
+
+    const renamedList = await store.mutate(
+      { type: 'rename-list', groupId: groupA.id, listId: listL.id, title: 'L2' },
+      first.revision,
+    )
+    assert.equal(renamedList.renamed.kind, 'list')
+    assert.notEqual(renamedList.renamed.listId, listL.id)
+    assert.deepEqual(renamedList.renamed.bookmarks.map((pair) => pair.from), oldBookmarkIds)
+    assert.ok(renamedList.renamed.bookmarks.every((pair) => pair.from !== pair.to))
+    assert.equal(
+      renamedList.groups[0].lists.find((list) => list.id === renamedList.renamed.listId).title,
+      'L2',
+    )
+
+    const renamedGroup = await store.mutate(
+      { type: 'rename-group', groupId: groupA.id, name: 'A2' },
+      renamedList.revision,
+    )
+    assert.equal(renamedGroup.renamed.kind, 'group')
+    assert.notEqual(renamedGroup.renamed.groupId, groupA.id)
+    assert.equal(renamedGroup.renamed.lists.length, 2)
+    assert.equal(renamedGroup.renamed.bookmarks.length, 3)
+    const newGroup = renamedGroup.groups.find(
+      (group) => group.id === renamedGroup.renamed.groupId,
+    )
+    assert.equal(newGroup.name, 'A2')
+
+    const newListM = newGroup.lists.find((list) => list.title === 'M')
+    await expectError(
+      { type: 'rename-group', groupId: newGroup.id, name: 'B' },
+      renamedGroup.revision,
+      409,
+      'duplicate-group',
+    )
+    await expectError(
+      { type: 'rename-list', groupId: newGroup.id, listId: newListM.id, title: 'L2' },
+      renamedGroup.revision,
+      409,
+      'duplicate-list',
+    )
+
+    const afterListDelete = await store.mutate(
+      { type: 'delete-list', groupId: newGroup.id, listId: newListM.id },
+      renamedGroup.revision,
+    )
+    assert.deepEqual(afterListDelete.stats, { groups: 2, lists: 2, bookmarks: 2 })
+    assert.equal(
+      afterListDelete.groups.find((group) => group.id === newGroup.id).lists.length,
+      1,
+    )
+
+    const groupB = afterListDelete.groups.find((group) => group.name === 'B')
+    const afterGroupDelete = await store.mutate(
+      { type: 'delete-group', groupId: groupB.id },
+      afterListDelete.revision,
+    )
+    assert.deepEqual(afterGroupDelete.stats, { groups: 1, lists: 1, bookmarks: 2 })
+
+    const disk = JSON.parse(await readFile(file, 'utf8'))
+    assert.deepEqual(disk.groups.map((group) => group.name), ['A2'])
+    assert.deepEqual(disk.groups[0].lists.map((list) => list.title), ['L2'])
+
+    async function expectError(op, revision, status, code) {
+      let error = null
+      try {
+        await store.mutate(op, revision)
+      } catch (thrown) {
+        error = thrown
+      }
+      assert.equal(error?.status, status)
+      assert.equal(error?.code, code)
+    }
+
+    await expectError(
+      { type: 'rename-group', groupId: newGroup.id, name: '   ' },
+      afterGroupDelete.revision,
+      400,
+      'invalid-name',
+    )
+    await expectError(
+      { type: 'rename-group', groupId: 'g_missing', name: 'X' },
+      afterGroupDelete.revision,
+      404,
+      'unknown-group',
+    )
+    await expectError(
+      { type: 'delete-list', groupId: groupB.id, listId: newGroup.lists[0].id },
+      afterGroupDelete.revision,
+      404,
+      'unknown-list',
+    )
+
+    const empty = await store.mutate(
+      { type: 'delete-group', groupId: newGroup.id },
+      afterGroupDelete.revision,
+    )
+    assert.deepEqual(empty.stats, { groups: 0, lists: 0, bookmarks: 0 })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
+async function testRenameRemap() {
+  const {
+    renameMaps,
+    remapOrderForRename,
+    remapExpandedForRename,
+    remapSelectedForRename,
+  } = requireFromSource('./remap.js')
+
+  const groupRename = {
+    kind: 'group',
+    oldGroupId: 'g_old',
+    groupId: 'g_new',
+    lists: [{ from: 'l_old', to: 'l_new' }],
+    bookmarks: [
+      { from: 'b1_old', to: 'b1_new' },
+      { from: 'b2_old', to: 'b2_new' },
+    ],
+  }
+  assert.equal(renameMaps(groupRename).groups.get('g_old'), 'g_new')
+  assert.deepEqual(
+    remapOrderForRename(
+      {
+        groups: ['g_other', 'g_old'],
+        lists: { g_old: ['l_old'] },
+        bookmarks: { l_old: ['b2_old', 'b1_old'] },
+      },
+      groupRename,
+    ),
+    {
+      groups: ['g_other', 'g_new'],
+      lists: { g_new: ['l_new'] },
+      bookmarks: { l_new: ['b2_new', 'b1_new'] },
+    },
+  )
+  assert.deepEqual(remapExpandedForRename({ l_old: false }, groupRename), { l_new: false })
+  assert.deepEqual(
+    [...remapSelectedForRename(new Set(['b1_old', 'b_other']), groupRename)],
+    ['b1_new', 'b_other'],
+  )
+
+  const listRename = {
+    kind: 'list',
+    groupId: 'g_same',
+    oldListId: 'l_old',
+    listId: 'l_new',
+    lists: [{ from: 'l_old', to: 'l_new' }],
+    bookmarks: [{ from: 'b_old', to: 'b_new' }],
+  }
+  assert.deepEqual(
+    remapOrderForRename(
+      { groups: ['g_same'], lists: { g_same: ['l_old'] }, bookmarks: { l_old: ['b_old'] } },
+      listRename,
+    ),
+    { groups: ['g_same'], lists: { g_same: ['l_new'] }, bookmarks: { l_new: ['b_new'] } },
+  )
+}
+
+/**
+ * A tiny recursive renderer for the dialog components. It cannot paint or run
+ * effects; it only executes the component tree with a React-shaped stub, which
+ * is enough to catch missing props, undefined helpers, and bad branching.
+ */
+async function testDialogRender() {
+  const originalLoad = Module._load
+  const ReactStub = {
+    createElement(type, props, ...children) {
+      const next = { ...(props ?? {}) }
+      if (children.length === 1) next.children = children[0]
+      else if (children.length > 1) next.children = children
+      return { type, props: next }
+    },
+    useState(initial) {
+      return [typeof initial === 'function' ? initial() : initial, () => {}]
+    },
+    useEffect() {},
+    useLayoutEffect() {},
+    useMemo(factory) {
+      return factory()
+    },
+    useCallback(callback) {
+      return callback
+    },
+    useRef(value) {
+      return { current: value }
+    },
+  }
+
+  function render(node) {
+    if (node === null || node === undefined || typeof node === 'boolean') return
+    if (Array.isArray(node)) {
+      for (const child of node) render(child)
+      return
+    }
+    if (typeof node === 'string' || typeof node === 'number') return
+    const type = node.type
+    if (typeof type === 'function') {
+      render(type(node.props))
+      return
+    }
+    if (typeof type === 'string') {
+      render(node.props.children)
+      return
+    }
+    throw new Error('unexpected element type: ' + String(type))
+  }
+
+  Module._load = function (request, parent, isMain) {
+    if (request === 'react') return ReactStub
+    return originalLoad.call(this, request, parent, isMain)
+  }
+
+  try {
+    const { BatchDeleteDialog, StructureDeleteDialog, RenameDialog } =
+      requireFromSource('./dialogs.js')
+    const t = (key) => key
+    const noop = () => {}
+
+    render(
+      ReactStub.createElement(BatchDeleteDialog, {
+        t,
+        entries: [
+          {
+            group: { name: 'G' },
+            list: { title: 'L' },
+            bookmark: { id: 'b1', title: 'B' },
+          },
+        ],
+        busy: false,
+        error: '',
+        onCancel: noop,
+        onConfirm: noop,
+      }),
+    )
+
+    render(
+      ReactStub.createElement(StructureDeleteDialog, {
+        t,
+        scope: 'group',
+        name: 'G',
+        lists: 2,
+        bookmarks: 3,
+        rows: [{ path: '2 bookmarks', title: 'L' }],
+        more: '',
+        busy: false,
+        error: '',
+        onCancel: noop,
+        onConfirm: noop,
+      }),
+    )
+
+    render(
+      ReactStub.createElement(StructureDeleteDialog, {
+        t,
+        scope: 'list',
+        name: 'L',
+        lists: 0,
+        bookmarks: 0,
+        rows: [],
+        busy: false,
+        error: '',
+        onCancel: noop,
+        onConfirm: noop,
+      }),
+    )
+
+    render(
+      ReactStub.createElement(RenameDialog, {
+        t,
+        scope: 'group',
+        value: 'G',
+        busy: false,
+        error: '',
+        onCancel: noop,
+        onConfirm: noop,
+        onDirty: noop,
+      }),
+    )
+  } finally {
+    Module._load = originalLoad
+  }
+}
+
 async function testSelectionHelpers() {
   const {
     toggleId,
@@ -705,6 +1056,7 @@ async function testSelectionHelpers() {
     groupCount,
     hiddenByQuery,
     targetStats,
+    pruneSelected,
   } = requireFromSource('./selection.js')
   const { emptyOrder } = requireFromSource('./order.js')
 
@@ -754,6 +1106,9 @@ async function testSelectionHelpers() {
   assert.equal(groupCount(entries), 2)
   assert.equal(hiddenByQuery(entries, 'gamma'), 2)
   assert.deepEqual(targetStats(entries, 'l1'), { total: 3, inTarget: 1, moving: 2 })
+
+  const kept = pruneSelected(new Set(['b1', 'gone']), { groups })
+  assert.deepEqual([...kept], ['b1'])
 }
 
 function request({ method = 'GET', headers = {}, body = null } = {}) {
@@ -936,6 +1291,9 @@ await test('import cleaning', testImportCleaning)
 await test('stable ids', testStableIds)
 await test('mutations', testMutations)
 await test('create and import', testCreateAndImport)
+await test('structure mutations', testStructureMutations)
+await test('rename remap', testRenameRemap)
+await test('dialog render', testDialogRender)
 await test('client bundle', testClientBundle)
 await test('styles', testStyles)
 await test('rail sizing', testRailSizing)

@@ -103,21 +103,59 @@ function countGroupMatches(groups, query) {
  * later back "resurrect" its old slot, and would leave dead entries behind.
  */
 function pruneOrder(order, collection) {
-  const valid = new Set()
+  const validGroups = new Set()
+  const validLists = new Set()
+  const validBookmarks = new Set()
   for (const group of collection.groups) {
+    validGroups.add(group.id)
     for (const list of group.lists) {
-      for (const bookmark of list.bookmarks) valid.add(bookmark.id)
+      validLists.add(list.id)
+      for (const bookmark of list.bookmarks) validBookmarks.add(bookmark.id)
     }
   }
 
   let changed = false
+  const groups = order.groups.filter((id) => validGroups.has(id))
+  if (groups.length !== order.groups.length) changed = true
+
+  const lists = {}
+  for (const [groupId, ids] of Object.entries(order.lists)) {
+    if (!validGroups.has(groupId)) {
+      changed = true
+      continue
+    }
+    const kept = ids.filter((id) => validLists.has(id))
+    lists[groupId] = kept
+    if (kept.length !== ids.length) changed = true
+  }
+
   const bookmarks = {}
   for (const [listId, ids] of Object.entries(order.bookmarks)) {
-    const kept = ids.filter((id) => valid.has(id))
+    if (!validLists.has(listId)) {
+      changed = true
+      continue
+    }
+    const kept = ids.filter((id) => validBookmarks.has(id))
     bookmarks[listId] = kept
     if (kept.length !== ids.length) changed = true
   }
-  return changed ? { ...order, bookmarks } : order
+  return changed ? { ...order, groups, lists, bookmarks } : order
+}
+
+/** Drops expanded/collapsed flags for lists a structural delete removed. */
+function pruneExpanded(expanded, collection) {
+  const valid = new Set()
+  for (const group of collection.groups ?? []) {
+    for (const list of group.lists ?? []) valid.add(list.id)
+  }
+
+  let changed = false
+  const next = {}
+  for (const [listId, open] of Object.entries(expanded)) {
+    if (valid.has(listId)) next[listId] = open
+    else changed = true
+  }
+  return changed ? next : expanded
 }
 
 /** Returns a copy of the list with its bookmarks in the reader's order. */
@@ -146,6 +184,7 @@ module.exports = {
   collectionSignature,
   countGroupMatches,
   pruneOrder,
+  pruneExpanded,
   orderListBookmarks,
   filterListBookmarks,
 }

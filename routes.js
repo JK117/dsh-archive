@@ -2,9 +2,9 @@
  * The routes the browser half calls.
  *
  * All handlers are same-origin only. `open` accepts nothing but an absolute
- * http(s) URL and calls a fixed platform opener; `mutate` only deletes, moves,
- * creates, or imports bookmarks inside the library, by id or by a validated
- * group/list target, and never accepts a path.
+ * http(s) URL and calls a fixed platform opener; `mutate` only creates,
+ * imports, renames, deletes, or moves inside the library, by id or by a
+ * validated group/list target, and never accepts a path.
  */
 import { MAX_MUTATE_BYTES } from './lib/config.js'
 import { launchExternal } from './lib/external.js'
@@ -74,7 +74,7 @@ export async function handleOpen(request, response) {
 }
 
 /**
- * `POST /dsh-archive/mutate`: one delete, move, create, or import operation.
+ * `POST /dsh-archive/mutate`: one create, import, rename, delete, or move operation.
  *
  * Request: `{ "revision": "...", "op": { "type": "...", ... } }`.
  * Success returns the full new library (plus `created` / `imported` details

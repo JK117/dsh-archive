@@ -74,7 +74,14 @@ module.exports = { fetchLibrary, openBookmark, mutateLibrary }
 const React = require('react')
 const h = React.createElement
 const { useState, useEffect, useRef } = React
-const { Chevron, CheckGlyph, TrashGlyph, PlusGlyph } = require('./glyphs.js')
+const {
+  Chevron,
+  CheckGlyph,
+  TrashGlyph,
+  PlusGlyph,
+  EditGlyph,
+} = require('./glyphs.js')
+const { MoreMenu } = require('./menu.js')
 const { Sortable } = require('./sortable.js')
 
 /** Keep in sync with the .16s exit animation in styles.js; 20ms covers a frame. */
@@ -287,10 +294,9 @@ function BookmarkCard({
           role: 'checkbox',
           'aria-checked': selected ? 'true' : 'false',
           'aria-label': t('select.cardAria', { title: bookmark.title }),
-          'aria-hidden': selectionMode ? undefined : 'true',
           'data-checked': selected ? 'true' : 'false',
           'data-no-drag': '1',
-          tabIndex: selectionMode && !confirming ? 0 : -1,
+          tabIndex: confirming ? -1 : 0,
           disabled: busy === true,
           onClick: (event) => {
             event.preventDefault()
@@ -394,6 +400,8 @@ function ListSection({
   deleteBusy,
   onToggle,
   onAdd,
+  onRename,
+  onDelete,
   onOpen,
   onToggleSelect,
   onRequestDelete,
@@ -403,8 +411,8 @@ function ListSection({
 }) {
   const inner = [
     h('span', { key: 'title', className: 'ar-sec__title' }, list.title),
-    h(Chevron, { key: 'chev', open }),
     h('span', { key: 'count', className: 'ar-sec__count' }, list.count),
+    h(Chevron, { key: 'chev', open }),
   ]
   const sortAttrs = {
     'data-sort-id': list.id,
@@ -430,25 +438,48 @@ function ListSection({
       )
 
   const addLabel = t('add.toListAria', { list: list.title })
-  const addButton =
+  const tools =
     canMutate === true
       ? h(
-          'button',
-          {
-            type: 'button',
-            className: 'ar-sec__add',
-            title: addLabel,
-            'aria-label': addLabel,
-            'data-list-add': list.id,
-            'data-no-drag': '1',
-            disabled: busy === true,
-            onClick: (event) => {
-              event.preventDefault()
-              event.stopPropagation()
-              onAdd(list.id)
+          'div',
+          { className: 'ar-sec__tools' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'ar-sec__add',
+              title: addLabel,
+              'aria-label': addLabel,
+              'data-list-add': list.id,
+              'data-no-drag': '1',
+              disabled: busy === true,
+              onClick: (event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                onAdd(list.id)
+              },
             },
-          },
-          h(PlusGlyph, { size: 14 }),
+            h(PlusGlyph, { size: 14 }),
+          ),
+          h(MoreMenu, {
+            label: t('menu.listAria', { name: list.title }),
+            disabled: busy === true,
+            items: [
+              {
+                id: 'rename',
+                label: t('menu.rename'),
+                icon: h(EditGlyph, { size: 14 }),
+                onSelect: (trigger) => onRename(list, trigger),
+              },
+              {
+                id: 'delete',
+                label: t('menu.deleteList'),
+                icon: h(TrashGlyph, { size: 14 }),
+                danger: true,
+                onSelect: (trigger) => onDelete(list, trigger),
+              },
+            ],
+          }),
         )
       : null
 
@@ -468,7 +499,7 @@ function ListSection({
       'div',
       { className: 'ar-sec__headbar', 'data-add': canMutate === true ? 'true' : 'false' },
       head,
-      addButton,
+      tools,
     ),
     h(
       'div',
@@ -587,6 +618,9 @@ const TOUCH_SCROLL_TOLERANCE = 8
 /** Mirrors the Host's MAX_DATA_BYTES; larger imports are rejected before reading. */
 const MAX_IMPORT_BYTES = 8 * 1024 * 1024
 
+/** Mirrors the Host's rename limit, so the input can stop early. */
+const MAX_NAME_LENGTH = 200
+
 /** Candy hues cycled by the left rail and the right column's group title. */
 const TONE_COUNT = 8
 
@@ -614,6 +648,7 @@ module.exports = {
   DRAG_TRIGGER_DISTANCE,
   TOUCH_SCROLL_TOLERANCE,
   MAX_IMPORT_BYTES,
+  MAX_NAME_LENGTH,
   TONE_COUNT,
   RAIL_WIDTH_KEY,
   RAIL_WIDTH_DEFAULT,
@@ -634,6 +669,7 @@ const h = React.createElement
 const { useEffect, useRef, useState } = React
 const { CloseGlyph } = require('./glyphs.js')
 const { targetStats } = require('./selection.js')
+const { MAX_NAME_LENGTH } = require('./constants.js')
 
 function focusablesIn(panel) {
   if (panel === null) return []
@@ -643,8 +679,19 @@ function focusablesIn(panel) {
 }
 
 /** A centered modal with a scrim, focus trap, Escape, and outside-click. */
-function Modal({ title, children, footer, onCancel, busy, initialFocusRef, width, tone }) {
+function Modal({
+  title,
+  children,
+  footer,
+  onCancel,
+  busy,
+  initialFocusRef,
+  selectInitial,
+  width,
+  tone,
+}) {
   const panelRef = useRef(null)
+  const wasBusy = useRef(false)
 
   useEffect(() => {
     const preferred =
@@ -652,7 +699,26 @@ function Modal({ title, children, footer, onCancel, busy, initialFocusRef, width
         ? initialFocusRef.current
         : null) ?? focusablesIn(panelRef.current)[0]
     if (preferred !== null && typeof preferred.focus === 'function') preferred.focus()
-  }, [initialFocusRef])
+    if (selectInitial === true && preferred !== null && typeof preferred.select === 'function') {
+      preferred.select()
+    }
+  }, [initialFocusRef, selectInitial])
+
+  /* Disabling the focused button during a write drops focus to the body. If
+     that write fails, the modal stays open, so bring focus back to it. */
+  useEffect(() => {
+    if (wasBusy.current && busy !== true && panelRef.current !== null) {
+      const active = document.activeElement
+      if (active === null || typeof active !== 'object' || !panelRef.current.contains(active)) {
+        const preferred =
+          (initialFocusRef !== undefined && initialFocusRef.current !== null
+            ? initialFocusRef.current
+            : null) ?? focusablesIn(panelRef.current)[0]
+        if (preferred !== null && typeof preferred.focus === 'function') preferred.focus()
+      }
+    }
+    wasBusy.current = busy === true
+  }, [busy, initialFocusRef])
 
   const onKeyDown = (event) => {
     if (event.key === 'Escape') {
@@ -701,12 +767,25 @@ function Modal({ title, children, footer, onCancel, busy, initialFocusRef, width
   )
 }
 
-/** Delete N selected bookmarks, after one explicit confirmation. */
-function BatchDeleteDialog({ t, entries, busy, error, onCancel, onConfirm }) {
+/**
+ * The one danger confirmation used by every delete path: the existing batch
+ * delete, deleting a whole group, and deleting one list. `rows` are plain text
+ * previews, so callers choose what is useful to see before confirming.
+ */
+function ConfirmDeleteDialog({
+  t,
+  title,
+  note,
+  summary,
+  rows = [],
+  more,
+  confirmLabel,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}) {
   const cancelRef = useRef(null)
-  const title = t('delete.batchTitle', { n: entries.length })
-  const visible = entries.slice(0, 4)
-  const remaining = entries.length - visible.length
 
   return h(
     Modal,
@@ -738,29 +817,187 @@ function BatchDeleteDialog({ t, entries, busy, error, onCancel, onConfirm }) {
             disabled: busy === true,
             onClick: onConfirm,
           },
-          busy === true ? t('delete.busy') : t('delete.batchConfirm'),
+          busy === true ? t('delete.busy') : confirmLabel,
         ),
       ),
     },
-    h('div', { className: 'ar-modal__note' }, t('delete.irreversible')),
-    h(
-      'ul',
-      { className: 'ar-pick-list' },
-      visible.map((entry) =>
-        h(
-          'li',
-          { key: entry.bookmark.id, className: 'ar-pick-list__row' },
-          h('span', { className: 'ar-pick-list__path' }, entry.group.name + ' / ' + entry.list.title),
-          h('span', { className: 'ar-pick-list__title', title: entry.bookmark.title }, entry.bookmark.title),
+    note === undefined || note === ''
+      ? null
+      : h('div', { className: 'ar-modal__note' }, note),
+    summary === undefined || summary === ''
+      ? null
+      : h('div', { className: 'ar-modal__hint' }, summary),
+    rows.length === 0
+      ? null
+      : h(
+          'ul',
+          { className: 'ar-pick-list' },
+          rows.map((row, index) =>
+            h(
+              'li',
+              { key: String(index), className: 'ar-pick-list__row' },
+              row.path === undefined || row.path === ''
+                ? null
+                : h('span', { className: 'ar-pick-list__path' }, row.path),
+              h('span', { className: 'ar-pick-list__title', title: row.title }, row.title),
+            ),
+          ),
+          more === undefined || more === ''
+            ? null
+            : h('li', { className: 'ar-pick-list__row ar-pick-list__more' }, more),
         ),
-      ),
-      remaining > 0
-        ? h('li', { className: 'ar-pick-list__row ar-pick-list__more' }, t('delete.moreItems', { n: remaining }))
-        : null,
-    ),
     error === '' || error === null || error === undefined
       ? null
       : h('div', { className: 'ar-modal__error', role: 'alert' }, error),
+  )
+}
+
+/** Delete N selected bookmarks, after one explicit confirmation. */
+function BatchDeleteDialog({ t, entries, busy, error, onCancel, onConfirm }) {
+  const visible = entries.slice(0, 4)
+  const remaining = entries.length - visible.length
+
+  return h(ConfirmDeleteDialog, {
+    t,
+    title: t('delete.batchTitle', { n: entries.length }),
+    note: t('delete.irreversible'),
+    rows: visible.map((entry) => ({
+      path: entry.group.name + ' / ' + entry.list.title,
+      title: entry.bookmark.title,
+    })),
+    more: remaining > 0 ? t('delete.moreItems', { n: remaining }) : '',
+    confirmLabel: t('delete.batchConfirm'),
+    busy,
+    error,
+    onCancel,
+    onConfirm,
+  })
+}
+
+/** Delete one whole group or one list, after previewing what it contains. */
+function StructureDeleteDialog({
+  t,
+  scope,
+  name,
+  lists,
+  bookmarks,
+  rows,
+  more,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}) {
+  const isGroup = scope === 'group'
+  return h(ConfirmDeleteDialog, {
+    t,
+    title: isGroup
+      ? t('delete.groupTitle', { name })
+      : t('delete.listTitle', { name }),
+    note: t('delete.irreversible'),
+    summary: isGroup
+      ? lists === 0 && bookmarks === 0
+        ? ''
+        : t('delete.groupSummary', { lists, bookmarks })
+      : bookmarks === 0
+        ? ''
+        : t('delete.listSummary', { bookmarks }),
+    rows,
+    more,
+    confirmLabel: isGroup ? t('delete.groupConfirm') : t('delete.listConfirm'),
+    busy,
+    error,
+    onCancel,
+    onConfirm,
+  })
+}
+
+/**
+ * Rename a group or list. The current value is preselected so typing replaces
+ * it, while an unchanged submit just closes the modal without a Host write.
+ */
+function RenameDialog({ t, scope, value, busy, error, onCancel, onConfirm, onDirty }) {
+  const [name, setName] = useState(value)
+  const [localError, setLocalError] = useState('')
+  const inputRef = useRef(null)
+
+  const submit = () => {
+    if (busy === true) return
+    const next = name.trim()
+    if (next === '') {
+      setLocalError(t('rename.required'))
+      if (inputRef.current !== null) inputRef.current.focus()
+      return
+    }
+    if (next === value) {
+      onCancel()
+      return
+    }
+    setLocalError('')
+    onConfirm(next)
+  }
+
+  const message = localError !== '' ? localError : error
+  return h(
+    Modal,
+    {
+      title: scope === 'group' ? t('rename.groupTitle') : t('rename.listTitle'),
+      onCancel,
+      busy,
+      initialFocusRef: inputRef,
+      selectInitial: true,
+      width: 'min(420px, 100%)',
+      footer: h(
+        'div',
+        { className: 'ar-modal__actions' },
+        h(
+          'button',
+          { type: 'button', className: 'ar-btn', disabled: busy === true, onClick: onCancel },
+          t('cancel'),
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ar-btn ar-btn--primary',
+            disabled: busy === true,
+            onClick: submit,
+          },
+          busy === true ? t('rename.busy') : t('rename.confirm'),
+        ),
+      ),
+    },
+    h(
+      'label',
+      { className: 'ar-form__field' },
+      h(
+        'span',
+        { className: 'ar-form__label' },
+        scope === 'group' ? t('rename.groupLabel') : t('rename.listLabel'),
+      ),
+      h('input', {
+        className: 'ar-form__input',
+        ref: inputRef,
+        type: 'text',
+        value: name,
+        maxLength: MAX_NAME_LENGTH,
+        spellCheck: false,
+        disabled: busy === true,
+        onChange: (event) => {
+          setName(event.target.value)
+          setLocalError('')
+          if (typeof onDirty === 'function') onDirty()
+        },
+        onKeyDown: (event) => {
+          if (event.key !== 'Enter') return
+          event.preventDefault()
+          submit()
+        },
+      }),
+    ),
+    message === '' || message === null || message === undefined
+      ? null
+      : h('div', { className: 'ar-modal__error', role: 'alert' }, message),
   )
 }
 
@@ -1475,6 +1712,8 @@ function ImportDialog({
 module.exports = {
   Modal,
   BatchDeleteDialog,
+  StructureDeleteDialog,
+  RenameDialog,
   MoveDialog,
   SelectionSummary,
   AddBookmarkDialog,
@@ -1488,7 +1727,8 @@ module.exports = {
  * The path data is copied locally instead of importing the Host package so the
  * plugin bundle stays self-contained, but the geometry, weight and sizes follow
  * the host UI. Native names: archive-outline, chevron-right-outline,
- * search-outline, trash-outline, check-outline, close-outline.
+ * search-outline, trash-outline, check-outline, close-outline, ellipsis-outline,
+ * edit-outline.
  */
 const React = require('react')
 const h = React.createElement
@@ -1607,6 +1847,55 @@ function PlusGlyph({ size }) {
   )
 }
 
+/**
+ * The shared "more actions" trigger. Host menus use three filled 1px dots on
+ * the same 16×16 frame, so it reads as part of the outline icon set.
+ */
+function EllipsisGlyph({ size }) {
+  const px = size === undefined ? 14 : size
+  return h(
+    'svg',
+    {
+      width: px,
+      height: px,
+      viewBox: '0 0 16 16',
+      fill: 'none',
+      'aria-hidden': 'true',
+      focusable: 'false',
+      style: { display: 'block' },
+    },
+    h('path', {
+      d: 'M3 9C3.55228 9 4 8.55228 4 8C4 7.44772 3.55228 7 3 7C2.44772 7 2 7.44772 2 8C2 8.55228 2.44772 9 3 9Z',
+      fill: 'currentColor',
+    }),
+    h('path', {
+      d: 'M8 9C8.55228 9 9 8.55228 9 8C9 7.44772 8.55228 7 8 7C7.44772 7 7 7.44772 7 8C7 8.55228 7.44772 9 8 9Z',
+      fill: 'currentColor',
+    }),
+    h('path', {
+      d: 'M13 9C13.5523 9 14 8.55228 14 8C14 7.44772 13.5523 7 13 7C12.4477 7 12 7.44772 12 8C12 8.55228 12.4477 9 13 9Z',
+      fill: 'currentColor',
+    }),
+  )
+}
+
+/** The rename affordance inside a menu. */
+function EditGlyph({ size }) {
+  return h(
+    Glyph,
+    { size: size === undefined ? 14 : size },
+    h('path', {
+      d: 'M8.85596 2.69971H4.19971C3.37141 2.69971 2.69992 3.37146 2.69971 4.19971V11.8003C2.69992 12.6285 3.37141 13.3003 4.19971 13.3003H11.8003C12.6283 13.2999 13.3001 12.6283 13.3003 11.8003V7.89893H14.3003V11.8003C14.3001 13.1806 13.1806 14.2999 11.8003 14.3003H4.19971C2.81913 14.3003 1.69992 13.1808 1.69971 11.8003V4.19971C1.69992 2.81918 2.81913 1.69971 4.19971 1.69971H8.85596V2.69971Z',
+      fill: 'currentColor',
+      stroke: 'none',
+    }),
+    h('path', {
+      d: 'M7.7849 8.23878L13.888 2.13574',
+      fill: 'none',
+    }),
+  )
+}
+
 /** Import: an arrow dropping into a tray. */
 function ImportGlyph({ size }) {
   return h(
@@ -1630,6 +1919,8 @@ module.exports = {
   CloseGlyph,
   PlusGlyph,
   ImportGlyph,
+  EllipsisGlyph,
+  EditGlyph,
 }
       },
 "./header.js": function (module, exports, require) {
@@ -1727,8 +2018,6 @@ const zh = {
   retry: '重试',
   'open.failed': '无法在系统浏览器中打开这个链接',
 
-  select: '选择',
-  'select.exit': '取消选择',
   'select.count': '已选 {n} 项',
   'select.groups': '跨 {m} 个分组',
   'select.hidden': '{k} 项不在当前筛选',
@@ -1742,6 +2031,25 @@ const zh = {
 
   'action.move': '移动',
   'action.delete': '删除',
+
+  'menu.rename': '重命名',
+  'menu.deleteGroup': '删除分组',
+  'menu.deleteList': '删除列表',
+  'menu.groupAria': '「{name}」分组操作',
+  'menu.listAria': '「{name}」列表操作',
+
+  'rename.groupTitle': '重命名分组',
+  'rename.listTitle': '重命名列表',
+  'rename.groupLabel': '分组名称',
+  'rename.listLabel': '列表名称',
+  'rename.confirm': '重命名',
+  'rename.busy': '保存中…',
+  'rename.required': '名称不能为空',
+  'rename.duplicateGroup': '已经有同名分组',
+  'rename.duplicateList': '这个分组里已经有同名列表',
+  'rename.done.group': '已重命名分组',
+  'rename.done.list': '已重命名列表',
+  'rename.failed': '重命名失败，请重试',
 
   'add.title': '新增书签',
   'add.toListAria': '在「{list}」中新增书签',
@@ -1790,9 +2098,17 @@ const zh = {
   'delete.irreversible': '删除后不可恢复。',
   'delete.moreItems': '等 {n} 项',
   'delete.batchConfirm': '确认删除',
+  'delete.groupTitle': '删除分组「{name}」？',
+  'delete.listTitle': '删除列表「{name}」？',
+  'delete.groupSummary': '将删除 {lists} 个列表、{bookmarks} 个书签。',
+  'delete.listSummary': '将删除 {bookmarks} 个书签。',
+  'delete.groupConfirm': '删除分组',
+  'delete.listConfirm': '删除列表',
   'delete.busy': '删除中…',
   'delete.done.one': '已删除 1 个书签',
   'delete.done.many': '已删除 {n} 个书签',
+  'delete.done.group': '已删除分组「{name}」',
+  'delete.done.list': '已删除列表「{name}」',
   'delete.failed': '删除失败，请重试',
 
   'move.title': '移动 {n} 个书签',
@@ -1841,8 +2157,6 @@ const en = {
   retry: 'Retry',
   'open.failed': 'Could not open this link in your browser',
 
-  select: 'Select',
-  'select.exit': 'Cancel selection',
   'select.count': '{n} selected',
   'select.groups': 'across {m} groups',
   'select.hidden': '{k} not in the current filter',
@@ -1856,6 +2170,25 @@ const en = {
 
   'action.move': 'Move',
   'action.delete': 'Delete',
+
+  'menu.rename': 'Rename',
+  'menu.deleteGroup': 'Delete group',
+  'menu.deleteList': 'Delete list',
+  'menu.groupAria': 'Actions for group “{name}”',
+  'menu.listAria': 'Actions for list “{name}”',
+
+  'rename.groupTitle': 'Rename group',
+  'rename.listTitle': 'Rename list',
+  'rename.groupLabel': 'Group name',
+  'rename.listLabel': 'List name',
+  'rename.confirm': 'Rename',
+  'rename.busy': 'Saving…',
+  'rename.required': 'Enter a name',
+  'rename.duplicateGroup': 'A group with that name already exists',
+  'rename.duplicateList': 'This group already has a list with that name',
+  'rename.done.group': 'Group renamed',
+  'rename.done.list': 'List renamed',
+  'rename.failed': "Couldn't rename. Try again.",
 
   'add.title': 'Add bookmark',
   'add.toListAria': 'Add a bookmark to “{list}”',
@@ -1904,9 +2237,17 @@ const en = {
   'delete.irreversible': "This can't be undone.",
   'delete.moreItems': '…and {n} more',
   'delete.batchConfirm': 'Delete',
+  'delete.groupTitle': 'Delete group “{name}”?',
+  'delete.listTitle': 'Delete list “{name}”?',
+  'delete.groupSummary': 'This deletes {lists} lists and {bookmarks} bookmarks.',
+  'delete.listSummary': 'This deletes {bookmarks} bookmarks.',
+  'delete.groupConfirm': 'Delete group',
+  'delete.listConfirm': 'Delete list',
   'delete.busy': 'Deleting…',
   'delete.done.one': 'Deleted 1 bookmark',
   'delete.done.many': 'Deleted {n} bookmarks',
+  'delete.done.group': 'Deleted group “{name}”',
+  'delete.done.list': 'Deleted list “{name}”',
   'delete.failed': "Couldn't delete. Try again.",
 
   'move.title': 'Move {n} bookmarks',
@@ -1983,6 +2324,202 @@ function apply(ctx) {
 }
 
 module.exports = { apply, inject: ['slots', 'locale'] }
+      },
+"./menu.js": function (module, exports, require) {
+/**
+ * The shared "more actions" menu used by both the group header and each list
+ * header. One trigger + one popover keeps the two surfaces identical and gives
+ * the keyboard the same behavior everywhere: arrows move, Home/End jump, Esc
+ * closes and returns focus, and Tab moves out naturally. The menu closes once
+ * focus leaves the trigger + popover, so the browser keeps the next tab stop.
+ */
+const React = require('react')
+const h = React.createElement
+const { useEffect, useRef, useState } = React
+const { EllipsisGlyph } = require('./glyphs.js')
+
+const ITEM_SELECTOR = '[role="menuitem"]:not([disabled])'
+
+function MoreMenu({ label, items, disabled, className }) {
+  const [open, setOpen] = useState(false)
+  const [placement, setPlacement] = useState('down')
+  const rootRef = useRef(null)
+  const triggerRef = useRef(null)
+  const menuRef = useRef(null)
+
+  useEffect(() => {
+    if (disabled === true) setOpen(false)
+  }, [disabled])
+
+  useEffect(() => {
+    if (!open) return undefined
+    const onPointerDown = (event) => {
+      if (rootRef.current !== null && rootRef.current.contains(event.target)) return
+      setOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return undefined
+    const frame = requestAnimationFrame(() => {
+      const first = menuRef.current === null ? null : menuRef.current.querySelector(ITEM_SELECTOR)
+      if (first !== null) first.focus({ preventScroll: true })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [open])
+
+  const focusItem = (index) => {
+    if (menuRef.current === null) return
+    const nodes = Array.from(menuRef.current.querySelectorAll(ITEM_SELECTOR))
+    if (nodes.length === 0) return
+    const at = index < 0 ? nodes.length - 1 : index % nodes.length
+    nodes[at].focus({ preventScroll: true })
+  }
+
+  /* Lists near the bottom of the scroll area open their menu upwards instead
+     of letting it fall past the viewport edge. */
+  const placeMenu = () => {
+    if (triggerRef.current === null || typeof window === 'undefined') return
+    const rect = triggerRef.current.getBoundingClientRect()
+    setPlacement(window.innerHeight - rect.bottom < 150 ? 'up' : 'down')
+  }
+
+  const openMenu = () => {
+    placeMenu()
+    setOpen(true)
+  }
+
+  const close = (focusTrigger) => {
+    setOpen(false)
+    if (focusTrigger && triggerRef.current !== null) {
+      requestAnimationFrame(() => {
+        if (triggerRef.current !== null && triggerRef.current.isConnected) {
+          triggerRef.current.focus({ preventScroll: true })
+        }
+      })
+    }
+  }
+
+  const onMenuKeyDown = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      close(true)
+      return
+    }
+    if (menuRef.current === null) return
+    const nodes = Array.from(menuRef.current.querySelectorAll(ITEM_SELECTOR))
+    if (nodes.length === 0) return
+    const current = nodes.indexOf(document.activeElement)
+
+    let next = null
+    if (event.key === 'ArrowDown') next = current + 1
+    else if (event.key === 'ArrowUp') next = current < 0 ? nodes.length - 1 : current - 1
+    else if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = nodes.length - 1
+    else return
+
+    event.preventDefault()
+    nodes[(next + nodes.length) % nodes.length].focus({ preventScroll: true })
+  }
+
+  const onTriggerKeyDown = (event) => {
+    if (event.key === 'Escape' && open) {
+      event.preventDefault()
+      event.stopPropagation()
+      setOpen(false)
+      return
+    }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+    event.preventDefault()
+    if (!open) openMenu()
+    requestAnimationFrame(() => focusItem(event.key === 'ArrowUp' ? -1 : 0))
+  }
+
+  /* Tab leaves the menu naturally; close only after focus has already moved
+     outside the trigger + popover, so the browser keeps the next stop. */
+  const onRootBlur = (event) => {
+    if (rootRef.current === null) return
+    const next = event.relatedTarget
+    if (
+      next !== null &&
+      typeof next === 'object' &&
+      next.nodeType !== undefined &&
+      rootRef.current.contains(next)
+    ) {
+      return
+    }
+    setOpen(false)
+  }
+
+  const runItem = (item) => {
+    setOpen(false)
+    if (typeof item.onSelect === 'function') item.onSelect(triggerRef.current)
+  }
+
+  return h(
+    'div',
+    {
+      className: className === undefined ? 'ar-more' : 'ar-more ' + className,
+      ref: rootRef,
+      onBlur: onRootBlur,
+    },
+    h(
+      'button',
+      {
+        type: 'button',
+        className: 'ar-more__trigger',
+        ref: triggerRef,
+        title: label,
+        'aria-label': label,
+        'aria-haspopup': 'menu',
+        'aria-expanded': open ? 'true' : 'false',
+        disabled: disabled === true,
+        onClick: () => {
+          if (open) setOpen(false)
+          else openMenu()
+        },
+        onKeyDown: onTriggerKeyDown,
+      },
+      h(EllipsisGlyph, { size: 14 }),
+    ),
+    open
+      ? h(
+          'div',
+          {
+            className: 'ar-menu',
+            'data-placement': placement,
+            role: 'menu',
+            'aria-label': label,
+            'aria-orientation': 'vertical',
+            ref: menuRef,
+            onKeyDown: onMenuKeyDown,
+          },
+          items.map((item, index) =>
+            h(
+              'button',
+              {
+                key: item.id === undefined ? String(index) : item.id,
+                type: 'button',
+                className: 'ar-menu__item',
+                role: 'menuitem',
+                'data-danger': item.danger === true ? 'true' : undefined,
+                onClick: () => runItem(item),
+              },
+              item.icon === undefined
+                ? null
+                : h('span', { className: 'ar-menu__icon', 'aria-hidden': 'true' }, item.icon),
+              h('span', { className: 'ar-menu__label' }, item.label),
+            ),
+          ),
+        )
+      : null,
+  )
+}
+
+module.exports = { MoreMenu }
       },
 "./order.js": function (module, exports, require) {
 /**
@@ -2090,21 +2627,59 @@ function countGroupMatches(groups, query) {
  * later back "resurrect" its old slot, and would leave dead entries behind.
  */
 function pruneOrder(order, collection) {
-  const valid = new Set()
+  const validGroups = new Set()
+  const validLists = new Set()
+  const validBookmarks = new Set()
   for (const group of collection.groups) {
+    validGroups.add(group.id)
     for (const list of group.lists) {
-      for (const bookmark of list.bookmarks) valid.add(bookmark.id)
+      validLists.add(list.id)
+      for (const bookmark of list.bookmarks) validBookmarks.add(bookmark.id)
     }
   }
 
   let changed = false
+  const groups = order.groups.filter((id) => validGroups.has(id))
+  if (groups.length !== order.groups.length) changed = true
+
+  const lists = {}
+  for (const [groupId, ids] of Object.entries(order.lists)) {
+    if (!validGroups.has(groupId)) {
+      changed = true
+      continue
+    }
+    const kept = ids.filter((id) => validLists.has(id))
+    lists[groupId] = kept
+    if (kept.length !== ids.length) changed = true
+  }
+
   const bookmarks = {}
   for (const [listId, ids] of Object.entries(order.bookmarks)) {
-    const kept = ids.filter((id) => valid.has(id))
+    if (!validLists.has(listId)) {
+      changed = true
+      continue
+    }
+    const kept = ids.filter((id) => validBookmarks.has(id))
     bookmarks[listId] = kept
     if (kept.length !== ids.length) changed = true
   }
-  return changed ? { ...order, bookmarks } : order
+  return changed ? { ...order, groups, lists, bookmarks } : order
+}
+
+/** Drops expanded/collapsed flags for lists a structural delete removed. */
+function pruneExpanded(expanded, collection) {
+  const valid = new Set()
+  for (const group of collection.groups ?? []) {
+    for (const list of group.lists ?? []) valid.add(list.id)
+  }
+
+  let changed = false
+  const next = {}
+  for (const [listId, open] of Object.entries(expanded)) {
+    if (valid.has(listId)) next[listId] = open
+    else changed = true
+  }
+  return changed ? next : expanded
 }
 
 /** Returns a copy of the list with its bookmarks in the reader's order. */
@@ -2133,6 +2708,7 @@ module.exports = {
   collectionSignature,
   countGroupMatches,
   pruneOrder,
+  pruneExpanded,
   orderListBookmarks,
   filterListBookmarks,
 }
@@ -2159,6 +2735,8 @@ const { PageHeader } = require('./header.js')
 const { GroupRail } = require('./sidebar.js')
 const { ListSection } = require('./bookmarks.js')
 const { Sortable } = require('./sortable.js')
+const { MoreMenu } = require('./menu.js')
+const { EditGlyph, TrashGlyph } = require('./glyphs.js')
 const { TONE_COUNT, MAX_IMPORT_BYTES, RAIL_WIDTH_MAX } = require('./constants.js')
 const { railCeiling, clampRailWidth, readSavedRailWidth, writeSavedRailWidth } = require('./rail.js')
 const { RailResizer } = require('./resizer.js')
@@ -2176,6 +2754,7 @@ const {
   collectionSignature,
   countGroupMatches,
   pruneOrder,
+  pruneExpanded,
   orderListBookmarks,
   filterListBookmarks,
 } = require('./order.js')
@@ -2187,8 +2766,24 @@ const {
   hiddenByQuery,
   targetStats,
   entryMap,
+  pruneSelected,
 } = require('./selection.js')
-const { BatchDeleteDialog, MoveDialog, SelectionSummary, AddBookmarkDialog, ImportDialog } = require('./dialogs.js')
+const {
+  renameMaps,
+  remapId,
+  remapOrderForRename,
+  remapExpandedForRename,
+  remapSelectedForRename,
+} = require('./remap.js')
+const {
+  BatchDeleteDialog,
+  StructureDeleteDialog,
+  RenameDialog,
+  MoveDialog,
+  SelectionSummary,
+  AddBookmarkDialog,
+  ImportDialog,
+} = require('./dialogs.js')
 
 /** A quick, tolerant shape count for the import confirmation, not validation. */
 function summarizeImport(parsed) {
@@ -2416,10 +3011,6 @@ function Panel(props) {
     () => visibleLists.map((list) => list.id),
     [visibleLists],
   )
-  const visibleCardCount = useMemo(
-    () => visibleLists.reduce((total, list) => total + list.bookmarks.length, 0),
-    [visibleLists],
-  )
   const groupMatches = useMemo(
     () => countGroupMatches(groups, queryText),
     [groups, queryText],
@@ -2438,7 +3029,7 @@ function Panel(props) {
   const selectionSummaryOpen = summaryOpen && entries.length > 0
 
   const dialogEntries = useMemo(() => {
-    if (dialog === null) return []
+    if (dialog === null || !Array.isArray(dialog.ids)) return []
     const lookup = entryMap(entries)
     return dialog.ids.map((id) => lookup.get(id)).filter(Boolean)
   }, [dialog, entries])
@@ -2453,14 +3044,48 @@ function Panel(props) {
     setFocusRequest({ selectors, nonce: Date.now() + Math.random() })
   }, [])
 
-  const applyPayload = useCallback((payload) => {
+  const applyPayload = useCallback((payload, preferredGroupId) => {
     setCollection(payload)
     setOrder((current) => pruneOrder(current, payload))
-    setActiveGroupId((current) =>
-      payload.groups.some((group) => group.id === current)
+    setActiveGroupId((current) => {
+      if (
+        preferredGroupId !== undefined &&
+        preferredGroupId !== null &&
+        payload.groups.some((group) => group.id === preferredGroupId)
+      ) {
+        return preferredGroupId
+      }
+      return payload.groups.some((group) => group.id === current)
         ? current
-        : payload.groups[0]?.id ?? null,
+        : payload.groups[0]?.id ?? null
+    })
+  }, [])
+
+  /**
+   * A rename changes the content-derived ids of everything below the renamed
+   * node, so the local selection, expansion, and drag order must be carried
+   * over with the Host's old→new pairs instead of being pruned away.
+   */
+  const applyRenamePayload = useCallback((payload, renamed) => {
+    const maps = renameMaps(renamed)
+    setCollection(payload)
+    setOrder((current) => pruneOrder(remapOrderForRename(current, renamed), payload))
+    setExpanded((current) => remapExpandedForRename(current, renamed))
+    setSelected((current) => remapSelectedForRename(current, renamed))
+    setConfirmingId((current) =>
+      current === null ? null : remapId(current, maps.bookmarks),
     )
+    setActiveGroupId((current) => {
+      if (
+        typeof renamed?.groupId === 'string' &&
+        payload.groups.some((group) => group.id === renamed.groupId)
+      ) {
+        return renamed.groupId
+      }
+      return payload.groups.some((group) => group.id === current)
+        ? current
+        : payload.groups[0]?.id ?? null
+    })
   }, [])
 
   const resetInteraction = useCallback(() => {
@@ -2944,6 +3569,162 @@ function Panel(props) {
     setDialogError('')
   }, [busy, entries, canMutate])
 
+  const openStructureDialog = useCallback(
+    (type, group, list, trigger) => {
+      if (busy || !canMutate || group === null) return
+      if (trigger !== undefined && trigger !== null) dialogTriggerRef.current = trigger
+      if (type === 'rename-group' || type === 'delete-group') {
+        setDialog({ type, groupId: group.id, name: group.name })
+      } else {
+        setDialog({ type, groupId: group.id, listId: list.id, title: list.title })
+      }
+      setDialogError('')
+      setSummaryOpen(false)
+    },
+    [busy, canMutate],
+  )
+
+  const confirmRename = useCallback(
+    async (name) => {
+      if (
+        dialog === null ||
+        (dialog.type !== 'rename-group' && dialog.type !== 'rename-list') ||
+        busy ||
+        collection === null ||
+        !canMutate
+      ) {
+        return
+      }
+
+      const isGroup = dialog.type === 'rename-group'
+      const op = isGroup
+        ? { type: 'rename-group', groupId: dialog.groupId, name }
+        : {
+            type: 'rename-list',
+            groupId: dialog.groupId,
+            listId: dialog.listId,
+            title: name,
+          }
+
+      setBusy(true)
+      setDialogError('')
+      try {
+        const payload = await requestMutation(op, collection.revision)
+        if (payload.renamed !== undefined) applyRenamePayload(payload, payload.renamed)
+        else applyPayload(payload)
+
+        setDialog(null)
+        setDialogError('')
+        setToast(t(isGroup ? 'rename.done.group' : 'rename.done.list'))
+        if (isGroup) {
+          focusLater(['.ar-group[data-active="true"]', '[data-group-title="true"]'])
+        } else {
+          const listId = payload.renamed?.listId ?? dialog.listId
+          focusLater([
+            '[data-list-head="' + listId + '"]',
+            '[data-group-title="true"]',
+            '.ar-search__input',
+          ])
+        }
+      } catch (error) {
+        if (handleMutationError(error)) return
+        if (error?.code === 'duplicate-group') setDialogError(t('rename.duplicateGroup'))
+        else if (error?.code === 'duplicate-list') setDialogError(t('rename.duplicateList'))
+        else setDialogError(t('rename.failed'))
+      } finally {
+        setBusy(false)
+      }
+    },
+    [
+      dialog,
+      busy,
+      collection,
+      canMutate,
+      applyRenamePayload,
+      applyPayload,
+      focusLater,
+      handleMutationError,
+      t,
+    ],
+  )
+
+  const confirmDeleteStructure = useCallback(async () => {
+    if (
+      dialog === null ||
+      (dialog.type !== 'delete-group' && dialog.type !== 'delete-list') ||
+      busy ||
+      collection === null ||
+      !canMutate
+    ) {
+      return
+    }
+
+    const isGroup = dialog.type === 'delete-group'
+    const name = isGroup ? dialog.name ?? '' : dialog.title ?? ''
+
+    let neighbourGroupId = null
+    let neighbourList = null
+    if (isGroup) {
+      const at = groups.findIndex((group) => group.id === dialog.groupId)
+      const neighbour = at === -1 ? null : groups[at + 1] ?? groups[at - 1] ?? null
+      neighbourGroupId = neighbour === null ? null : neighbour.id
+    } else {
+      const at = visibleLists.findIndex((list) => list.id === dialog.listId)
+      neighbourList =
+        at === -1 ? null : visibleLists[at + 1] ?? visibleLists[at - 1] ?? null
+    }
+
+    setBusy(true)
+    setDialogError('')
+    try {
+      const payload = await requestMutation(
+        isGroup
+          ? { type: 'delete-group', groupId: dialog.groupId }
+          : { type: 'delete-list', groupId: dialog.groupId, listId: dialog.listId },
+        collection.revision,
+      )
+
+      applyPayload(payload, isGroup ? neighbourGroupId : undefined)
+      setExpanded((current) => pruneExpanded(current, payload))
+      const kept = pruneSelected(selected, payload)
+      setSelected(kept)
+      if (kept.size === 0) {
+        setSelectionMode(false)
+        setSummaryOpen(false)
+      }
+      setConfirmingId(null)
+      setDialog(null)
+      setDialogError('')
+      setToast(t(isGroup ? 'delete.done.group' : 'delete.done.list', { name }))
+
+      const selectors = []
+      if (isGroup) {
+        selectors.push('.ar-group[data-active="true"]', '[data-group-title="true"]')
+      } else if (neighbourList !== null) {
+        selectors.push('[data-list-head="' + neighbourList.id + '"]')
+      }
+      selectors.push('[data-group-title="true"]', '.ar-search__input')
+      focusLater(selectors)
+    } catch (error) {
+      if (handleMutationError(error)) return
+      setDialogError(t('delete.failed'))
+    } finally {
+      setBusy(false)
+    }
+  }, [
+    dialog,
+    busy,
+    collection,
+    canMutate,
+    groups,
+    visibleLists,
+    selected,
+    applyPayload,
+    focusLater,
+    handleMutationError,
+    t,
+  ])
+
   const closeDialog = useCallback(() => {
     if (busy) return
     const trigger = dialogTriggerRef.current
@@ -2954,20 +3735,23 @@ function Panel(props) {
     }
   }, [busy])
 
-  const enterSelection = useCallback(() => {
-    if (busy || !canMutate) return
-    setSelectionMode(true)
-    setSummaryOpen(false)
-  }, [busy, canMutate])
+  const exitSelection = useCallback(
+    (bookmarkId) => {
+      if (busy) return
+      setSelectionMode(false)
+      setSelected(new Set())
+      setSummaryOpen(false)
+      setConfirmingId(null)
 
-  const exitSelection = useCallback(() => {
-    if (busy) return
-    setSelectionMode(false)
-    setSelected(new Set())
-    setSummaryOpen(false)
-    setConfirmingId(null)
-    focusLater(['.ar-main__select', '[data-group-title="true"]'])
-  }, [busy, focusLater])
+      const selectors = []
+      if (typeof bookmarkId === 'string') {
+        selectors.push('[data-focus-id="' + bookmarkId + '"]')
+      }
+      selectors.push('.ar-group[data-active="true"]', '[data-group-title="true"]')
+      focusLater(selectors)
+    },
+    [busy, focusLater],
+  )
 
   const toggleSelect = useCallback(
     (bookmarkId) => {
@@ -2976,7 +3760,7 @@ function Panel(props) {
       // Unchecking the last card ends selection mode, so the grid returns to
       // browsing and the bar goes away with it.
       if (next.size === 0) {
-        exitSelection()
+        exitSelection(bookmarkId)
         return
       }
       setSelected(next)
@@ -3209,6 +3993,81 @@ function Panel(props) {
       onCancel: closeDialog,
       onConfirm: confirmMove,
     })
+  } else if (
+    dialog !== null &&
+    (dialog.type === 'rename-group' || dialog.type === 'rename-list')
+  ) {
+    const isGroup = dialog.type === 'rename-group'
+    const group =
+      collection === null
+        ? null
+        : collection.groups.find((candidate) => candidate.id === dialog.groupId) ?? null
+    const list =
+      group === null || isGroup
+        ? null
+        : group.lists.find((candidate) => candidate.id === dialog.listId) ?? null
+    dialogNode = h(RenameDialog, {
+      t,
+      scope: isGroup ? 'group' : 'list',
+      value: isGroup
+        ? group?.name ?? dialog.name ?? ''
+        : list?.title ?? dialog.title ?? '',
+      busy,
+      error: dialogError,
+      onCancel: closeDialog,
+      onConfirm: confirmRename,
+      onDirty: () => setDialogError(''),
+    })
+  } else if (
+    dialog !== null &&
+    (dialog.type === 'delete-group' || dialog.type === 'delete-list')
+  ) {
+    const isGroup = dialog.type === 'delete-group'
+    const group =
+      collection === null
+        ? null
+        : collection.groups.find((candidate) => candidate.id === dialog.groupId) ?? null
+    const orderedLists =
+      group === null ? [] : listsByGroup.get(group.id) ?? group.lists
+    const list =
+      group === null || isGroup
+        ? null
+        : orderedLists.find((candidate) => candidate.id === dialog.listId) ?? null
+
+    let rows = []
+    let more = ''
+    if (isGroup) {
+      rows = orderedLists.slice(0, 4).map((candidate) => ({
+        path: t('count.bookmarks', { n: candidate.count }),
+        title: candidate.title,
+      }))
+      if (orderedLists.length > rows.length) {
+        more = t('delete.moreItems', { n: orderedLists.length - rows.length })
+      }
+    } else if (list !== null) {
+      const orderedBookmarks = orderListBookmarks(list, order).bookmarks
+      rows = orderedBookmarks.slice(0, 4).map((bookmark) => ({
+        path: '',
+        title: bookmark.title,
+      }))
+      if (orderedBookmarks.length > rows.length) {
+        more = t('delete.moreItems', { n: orderedBookmarks.length - rows.length })
+      }
+    }
+
+    dialogNode = h(StructureDeleteDialog, {
+      t,
+      scope: isGroup ? 'group' : 'list',
+      name: isGroup ? group?.name ?? dialog.name ?? '' : list?.title ?? dialog.title ?? '',
+      lists: orderedLists.length,
+      bookmarks: isGroup ? group?.count ?? 0 : list?.count ?? 0,
+      rows,
+      more,
+      busy,
+      error: dialogError,
+      onCancel: closeDialog,
+      onConfirm: confirmDeleteStructure,
+    })
   }
 
   const fileInput = h('input', {
@@ -3320,7 +4179,6 @@ function Panel(props) {
 
   if (activeGroup !== null) {
     const showExpand = queryText === '' && activeLists.length > 0
-    const showSelect = canMutate && (selectionMode || visibleCardCount > 0)
     const meta =
       queryText === ''
         ? [
@@ -3350,7 +4208,7 @@ function Panel(props) {
           ),
           h('div', { className: 'ar-main__meta' }, meta),
         ),
-        showExpand || showSelect
+        showExpand || canMutate
           ? h(
               'div',
               { className: 'ar-main__actions' },
@@ -3366,18 +4224,28 @@ function Panel(props) {
                     allListsOpen ? t('collapseAll') : t('expandAll'),
                   )
                 : null,
-              showSelect
-                ? h(
-                    'button',
-                    {
-                      type: 'button',
-                      className: 'ar-btn ar-main__select',
-                      'data-active': selectionMode ? 'true' : undefined,
-                      disabled: busy,
-                      onClick: selectionMode ? exitSelection : enterSelection,
-                    },
-                    selectionMode ? t('select.exit') : t('select'),
-                  )
+              canMutate
+                ? h(MoreMenu, {
+                    label: t('menu.groupAria', { name: activeGroup.name }),
+                    disabled: busy,
+                    items: [
+                      {
+                        id: 'rename',
+                        label: t('menu.rename'),
+                        icon: h(EditGlyph, { size: 14 }),
+                        onSelect: (trigger) =>
+                          openStructureDialog('rename-group', activeGroup, null, trigger),
+                      },
+                      {
+                        id: 'delete',
+                        label: t('menu.deleteGroup'),
+                        icon: h(TrashGlyph, { size: 14 }),
+                        danger: true,
+                        onSelect: (trigger) =>
+                          openStructureDialog('delete-group', activeGroup, null, trigger),
+                      },
+                    ],
+                  })
                 : null,
             )
           : null,
@@ -3440,6 +4308,10 @@ function Panel(props) {
               deleteBusy: busy,
               onToggle: () => toggleList(list.id),
               onAdd: openAddToList,
+              onRename: (candidate, trigger) =>
+                openStructureDialog('rename-list', activeGroup, candidate, trigger),
+              onDelete: (candidate, trigger) =>
+                openStructureDialog('delete-list', activeGroup, candidate, trigger),
               onOpen: openBookmark,
               onToggleSelect: toggleSelect,
               onRequestDelete: requestDeleteCard,
@@ -3632,6 +4504,110 @@ function writeSavedRailWidth(width) {
 }
 
 module.exports = { railCeiling, clampRailWidth, readSavedRailWidth, writeSavedRailWidth }
+      },
+"./remap.js": function (module, exports, require) {
+/**
+ * Rename changes the Host's content-derived ids: a group rename also changes
+ * every list / bookmark id below it, and a list rename changes its bookmarks.
+ * The Host returns the old→new pairs; these helpers carry the reader's local
+ * selection, expansion, and manual order across that id churn.
+ */
+
+function pairMap(pairs) {
+  const map = new Map()
+  if (!Array.isArray(pairs)) return map
+  for (const pair of pairs) {
+    if (
+      pair !== null &&
+      typeof pair === 'object' &&
+      typeof pair.from === 'string' &&
+      typeof pair.to === 'string'
+    ) {
+      map.set(pair.from, pair.to)
+    }
+  }
+  return map
+}
+
+/** Build the three lookup maps carried by the Host's `renamed` payload. */
+function renameMaps(renamed) {
+  const groups = new Map()
+  const lists = pairMap(renamed?.lists)
+  const bookmarks = pairMap(renamed?.bookmarks)
+
+  if (
+    renamed?.kind === 'group' &&
+    typeof renamed.oldGroupId === 'string' &&
+    typeof renamed.groupId === 'string'
+  ) {
+    groups.set(renamed.oldGroupId, renamed.groupId)
+  }
+  if (
+    renamed?.kind === 'list' &&
+    typeof renamed.oldListId === 'string' &&
+    typeof renamed.listId === 'string'
+  ) {
+    lists.set(renamed.oldListId, renamed.listId)
+  }
+
+  return { groups, lists, bookmarks }
+}
+
+function remapId(id, map) {
+  if (id === null || id === undefined) return id
+  return map.get(id) ?? id
+}
+
+function remapIds(ids, map) {
+  return ids.map((id) => map.get(id) ?? id)
+}
+
+/** Rewrites the saved drag order so a rename does not discard it. */
+function remapOrderForRename(order, renamed) {
+  const maps = renameMaps(renamed)
+
+  const groups = remapIds(order.groups, maps.groups)
+
+  const lists = {}
+  for (const [groupId, ids] of Object.entries(order.lists)) {
+    const nextGroup = remapId(groupId, maps.groups)
+    lists[nextGroup] = remapIds(ids, maps.lists)
+  }
+
+  const bookmarks = {}
+  for (const [listId, ids] of Object.entries(order.bookmarks)) {
+    const nextList = remapId(listId, maps.lists)
+    bookmarks[nextList] = remapIds(ids, maps.bookmarks)
+  }
+
+  return { groups, lists, bookmarks }
+}
+
+/** Moves the expanded/collapsed flags to the renamed list ids. */
+function remapExpandedForRename(expanded, renamed) {
+  const maps = renameMaps(renamed)
+  const next = {}
+  for (const [listId, open] of Object.entries(expanded)) {
+    next[remapId(listId, maps.lists)] = open
+  }
+  return next
+}
+
+/** Keeps a selection across a rename instead of silently losing it. */
+function remapSelectedForRename(selected, renamed) {
+  const maps = renameMaps(renamed)
+  const next = new Set()
+  for (const id of selected) next.add(remapId(id, maps.bookmarks))
+  return next
+}
+
+module.exports = {
+  renameMaps,
+  remapId,
+  remapOrderForRename,
+  remapExpandedForRename,
+  remapSelectedForRename,
+}
       },
 "./resizer.js": function (module, exports, require) {
 /**
@@ -3840,6 +4816,23 @@ function entryMap(entries) {
   return map
 }
 
+/** Drops selected ids whose list / group a structural delete removed. */
+function pruneSelected(selected, collection) {
+  if (selected.size === 0) return selected
+  const valid = new Set()
+  for (const group of collection?.groups ?? []) {
+    for (const list of group.lists ?? []) {
+      for (const bookmark of list.bookmarks ?? []) valid.add(bookmark.id)
+    }
+  }
+
+  const next = new Set()
+  for (const id of selected) {
+    if (valid.has(id)) next.add(id)
+  }
+  return next.size === selected.size ? selected : next
+}
+
 module.exports = {
   toggleId,
   selectedEntries,
@@ -3848,6 +4841,7 @@ module.exports = {
   hiddenByQuery,
   targetStats,
   entryMap,
+  pruneSelected,
 }
       },
 "./sidebar.js": function (module, exports, require) {
@@ -4730,7 +5724,21 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-main__title{flex:0 1 auto;min-width:0;margin:0;font-size:16px;line-height:22px;font-weight:600;letter-spacing:-.005em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ar-group-ink,var(--dsw-alias-label-primary));outline:none}
 .ar-main__meta{flex:none;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
 .ar-main__actions{flex:none;display:flex;align-items:center;gap:4px}
-.ar-main__select[data-active="true"]{background:color-mix(in oklab,var(--dsw-alias-brand-primary) 12%,transparent);color:var(--dsw-alias-brand-primary)}
+/* The shared more menu: one ellipsis trigger and one compact popover, used by the group header and every list header. */
+.ar-more{position:relative;flex:none;display:inline-flex;align-items:center}
+.ar-more__trigger{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;opacity:.68;transition:background-color .12s ease,color .12s ease,opacity .12s ease}
+.ar-more__trigger:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:0;opacity:1}
+.ar-more__trigger:disabled{opacity:.35;cursor:default}
+.ar-sec__tools .ar-more__trigger{color:var(--ar-list-ink-soft,var(--dsw-alias-label-secondary))}
+/* Floating menus use the host menu material: translucent surface + blur, no border, elevation does the lifting. */
+.ar-menu{position:absolute;top:calc(100% + 5px);right:0;z-index:70;min-width:168px;padding:4px;border:0;border-radius:12px;background:var(--dsw-menu-surface-fill,var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base)));-webkit-backdrop-filter:var(--dsw-menu-backdrop-filter,blur(20px) saturate(150%));backdrop-filter:var(--dsw-menu-backdrop-filter,blur(20px) saturate(150%));box-shadow:var(--dsw-elevation-prominent,0 18px 44px rgba(0,0,0,.28));transform-origin:top right;animation:ar-menu-in .14s cubic-bezier(.2,.7,.2,1) both}
+.ar-menu[data-placement="up"]{top:auto;bottom:calc(100% + 5px);transform-origin:bottom right;animation-name:ar-menu-in-up}
+.ar-menu__item{display:flex;align-items:center;gap:10px;width:100%;height:28px;padding:0 7px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px;text-align:left;white-space:nowrap;cursor:pointer}
+.ar-menu__item:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
+.ar-menu__item[data-danger="true"]{color:var(--ar-danger)}
+.ar-menu__icon{flex:none;display:inline-flex;align-items:center;color:var(--dsw-alias-label-secondary)}
+.ar-menu__item[data-danger="true"] .ar-menu__icon{color:var(--ar-danger)}
+.ar-menu__label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .ar-btn{appearance:none;display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 9px;border:.5px solid transparent;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer;transition:background-color .14s ease,color .14s ease}
 .ar-btn:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
 .ar-btn:disabled{opacity:.5;cursor:default}
@@ -4743,21 +5751,22 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-sections>.ar-sec{border-top:1px solid var(--ar-line)}
 .ar-sections>.ar-sec:first-child{border-top:0}
 .ar-sec__headbar{position:relative;display:flex;align-items:center;height:32px}
-.ar-sec__head{position:relative;display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 36px 0 var(--ar-content-inset);border:0;border-radius:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;font-weight:600;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none}
+.ar-sec__head{position:relative;display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 64px 0 var(--ar-content-inset);border:0;border-radius:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;font-weight:600;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none}
 .ar-sec__headbar[data-add="false"] .ar-sec__head{padding-right:16px}
+.ar-sec__tools{position:absolute;top:calc(50% - 11px);right:16px;display:flex;align-items:center;gap:2px}
 button.ar-sec__head:hover,.ar-sec__headbar:hover button.ar-sec__head:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
 .ar-sec__head[data-static="true"]{cursor:default}
 button.ar-sec__head:disabled{cursor:default}
 button.ar-sec__head:disabled:hover{background:transparent}
 .ar-sec__head:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
-.ar-sec__add{position:absolute;top:50%;right:8px;z-index:1;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--ar-list-ink-soft,var(--dsw-alias-label-secondary));cursor:pointer;opacity:.7;transform:translateY(-50%);transition:background-color .12s ease,color .12s ease,opacity .12s ease}
+.ar-sec__add{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--ar-list-ink-soft,var(--dsw-alias-label-secondary));cursor:pointer;opacity:.7;transition:background-color .12s ease,color .12s ease,opacity .12s ease}
 .ar-sec__add:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-brand-primary);opacity:1}
 .ar-sec__add:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:0;opacity:1}
 .ar-sec__add:disabled{opacity:.35;cursor:default}
 .ar-sec__chev{flex:none;display:inline-flex;align-items:center;color:var(--ar-list-ink-soft,var(--dsw-alias-label-secondary));transition:transform .16s ease}
 .ar-sec[data-open="true"] .ar-sec__chev{transform:rotate(90deg)}
 .ar-sec__title{flex:0 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--ar-list-ink,var(--dsw-alias-label-primary))}
-.ar-sec__count{flex:none;margin-left:auto;font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+.ar-sec__count{flex:none;font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
 /* The card body stays mounted and animates its row from 0fr to 1fr, so both open and close have a height transition; visibility keeps collapsed cards out of the tab order. */
 .ar-sec__body{display:grid;grid-template-rows:0fr;visibility:hidden;transition:grid-template-rows .24s cubic-bezier(.2,.7,.2,1),visibility 0s linear .24s}
 .ar-sec[data-open="true"] .ar-sec__body{grid-template-rows:1fr;visibility:visible;transition:grid-template-rows .24s cubic-bezier(.2,.7,.2,1),visibility 0s}
@@ -4794,14 +5803,13 @@ button.ar-sec__head:disabled:hover{background:transparent}
 .ar-fav{flex:none;width:18px;height:18px;border-radius:4px;object-fit:contain;transition:opacity .12s ease}
 .ar-fav--letter{display:inline-flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent);color:var(--dsw-alias-label-secondary);font-size:10.5px;font-weight:600;line-height:1}
 .ar-card:hover .ar-fav,.ar-card__link:focus-visible ~ .ar-card__lead .ar-fav,.ar-card[data-selected="true"] .ar-fav{opacity:0}
-.ar-card__check{position:absolute;inset:0;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:1.5px solid var(--dsw-alias-label-tertiary);border-radius:4px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary-inverted);cursor:pointer;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .12s ease,visibility 0s linear .12s,border-color .12s ease,background-color .12s ease}
-.ar-card:hover .ar-card__check,.ar-card__link:focus-visible ~ .ar-card__lead .ar-card__check,.ar-card__check:focus-visible,.ar-card[data-selected="true"] .ar-card__check{opacity:1;visibility:visible;pointer-events:auto;transition:opacity .12s ease,visibility 0s,border-color .12s ease,background-color .12s ease}
+.ar-card__check{position:absolute;inset:0;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:1.5px solid var(--dsw-alias-label-tertiary);border-radius:4px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary-inverted);cursor:pointer;opacity:0;pointer-events:none;transition:opacity .12s ease,border-color .12s ease,background-color .12s ease}
+.ar-card:hover .ar-card__check,.ar-card__link:focus-visible ~ .ar-card__lead .ar-card__check,.ar-card__check:focus-visible,.ar-card[data-selected="true"] .ar-card__check{opacity:1;pointer-events:auto;transition:opacity .12s ease,border-color .12s ease,background-color .12s ease}
 /* Selection mode only changes what a click does. Unselected cards keep their
    favicon and stay visually identical to the browsing state; their box appears
    on hover or keyboard focus, while selected cards keep the checked box. The
-   idle box keeps its visibility so Tab can still reach it — the keyboard
-   focus rule above then reveals it. */
-.ar-card[data-selecting="true"] .ar-card__check{visibility:visible}
+   box stays in the tab order (opacity only) so the keyboard entry does not need
+   the old header button; focus-visible reveals it. */
 .ar-card__check:hover{border-color:var(--dsw-alias-brand-primary)}
 .ar-card__check[data-checked="true"]{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted)}
 .ar-card__check:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
@@ -4909,16 +5917,19 @@ button.ar-sec__head:disabled:hover{background:transparent}
 .ar-form__target{display:flex;flex-direction:column;gap:3px;margin-bottom:12px;padding:8px 10px;border:1px solid var(--ar-line);border-radius:6px;background:var(--dsw-alias-bg-layer-1)}
 .ar-form__target-value{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:12px;line-height:17px;color:var(--dsw-alias-label-primary)}
 .ar-import__meta{margin-top:8px;color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:16px;font-variant-numeric:tabular-nums}
+@media (hover:hover){.ar-more__trigger:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);opacity:1}.ar-sec__tools .ar-more__trigger:hover{color:var(--dsw-alias-brand-primary)}.ar-menu__item:hover{background:var(--dsw-alias-interactive-bg-hover)}.ar-menu__item[data-danger="true"]:hover{background:color-mix(in oklab,var(--ar-danger) 12%,transparent);color:var(--ar-danger)}}
 @keyframes ar-fade-in{from{opacity:0}}
 @keyframes ar-confirm-in{from{opacity:0;transform:translateX(10px) scale(.96)}}
 @keyframes ar-confirm-out{to{opacity:0;transform:translateX(10px) scale(.96)}}
 @keyframes ar-view-in{from{opacity:0;transform:translateY(var(--ar-shift,6px))}}
 @keyframes ar-bar-in{from{opacity:0;transform:translateY(8px)}}
 @keyframes ar-modal-in{from{opacity:0;transform:translateY(4px) scale(.985)}}
+@keyframes ar-menu-in{from{opacity:0;transform:translateY(-4px) scale(.98)}}
+@keyframes ar-menu-in-up{from{opacity:0;transform:translateY(4px) scale(.98)}}
 .ar-toast{animation:ar-fade-in .16s ease both}
 @media (max-width:720px){.ar-bar-dock{left:0}.ar-modal{padding:12px}.ar-modal__panel{width:100%}}
-@media (pointer:coarse){.ar-resizer{width:18px}}
-@media (prefers-reduced-motion:reduce){.ar-toast,.ar-view,.ar-sec__body,.ar-sec__chev,.ar-grid,.ar-card,.ar-card__check,.ar-card__trash,.ar-card__confirm,.ar-card__confirm[data-leaving="true"],.ar-bar,.ar-summary,.ar-modal,.ar-modal__panel,.ar-resizer::before{animation:none;transition:none}}`
+@media (pointer:coarse){.ar-resizer{width:18px}.ar-card__check{opacity:1;pointer-events:auto}}
+@media (prefers-reduced-motion:reduce){.ar-toast,.ar-view,.ar-sec__body,.ar-sec__chev,.ar-grid,.ar-card,.ar-card__check,.ar-card__trash,.ar-card__confirm,.ar-card__confirm[data-leaving="true"],.ar-bar,.ar-summary,.ar-modal,.ar-modal__panel,.ar-menu,.ar-resizer::before{animation:none;transition:none}}`
 
 module.exports = { CSS }
       },

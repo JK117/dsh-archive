@@ -8,6 +8,7 @@ const h = React.createElement
 const { useEffect, useRef, useState } = React
 const { CloseGlyph } = require('./glyphs.js')
 const { targetStats } = require('./selection.js')
+const { MAX_NAME_LENGTH } = require('./constants.js')
 
 function focusablesIn(panel) {
   if (panel === null) return []
@@ -17,8 +18,19 @@ function focusablesIn(panel) {
 }
 
 /** A centered modal with a scrim, focus trap, Escape, and outside-click. */
-function Modal({ title, children, footer, onCancel, busy, initialFocusRef, width, tone }) {
+function Modal({
+  title,
+  children,
+  footer,
+  onCancel,
+  busy,
+  initialFocusRef,
+  selectInitial,
+  width,
+  tone,
+}) {
   const panelRef = useRef(null)
+  const wasBusy = useRef(false)
 
   useEffect(() => {
     const preferred =
@@ -26,7 +38,26 @@ function Modal({ title, children, footer, onCancel, busy, initialFocusRef, width
         ? initialFocusRef.current
         : null) ?? focusablesIn(panelRef.current)[0]
     if (preferred !== null && typeof preferred.focus === 'function') preferred.focus()
-  }, [initialFocusRef])
+    if (selectInitial === true && preferred !== null && typeof preferred.select === 'function') {
+      preferred.select()
+    }
+  }, [initialFocusRef, selectInitial])
+
+  /* Disabling the focused button during a write drops focus to the body. If
+     that write fails, the modal stays open, so bring focus back to it. */
+  useEffect(() => {
+    if (wasBusy.current && busy !== true && panelRef.current !== null) {
+      const active = document.activeElement
+      if (active === null || typeof active !== 'object' || !panelRef.current.contains(active)) {
+        const preferred =
+          (initialFocusRef !== undefined && initialFocusRef.current !== null
+            ? initialFocusRef.current
+            : null) ?? focusablesIn(panelRef.current)[0]
+        if (preferred !== null && typeof preferred.focus === 'function') preferred.focus()
+      }
+    }
+    wasBusy.current = busy === true
+  }, [busy, initialFocusRef])
 
   const onKeyDown = (event) => {
     if (event.key === 'Escape') {
@@ -75,12 +106,25 @@ function Modal({ title, children, footer, onCancel, busy, initialFocusRef, width
   )
 }
 
-/** Delete N selected bookmarks, after one explicit confirmation. */
-function BatchDeleteDialog({ t, entries, busy, error, onCancel, onConfirm }) {
+/**
+ * The one danger confirmation used by every delete path: the existing batch
+ * delete, deleting a whole group, and deleting one list. `rows` are plain text
+ * previews, so callers choose what is useful to see before confirming.
+ */
+function ConfirmDeleteDialog({
+  t,
+  title,
+  note,
+  summary,
+  rows = [],
+  more,
+  confirmLabel,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}) {
   const cancelRef = useRef(null)
-  const title = t('delete.batchTitle', { n: entries.length })
-  const visible = entries.slice(0, 4)
-  const remaining = entries.length - visible.length
 
   return h(
     Modal,
@@ -112,29 +156,187 @@ function BatchDeleteDialog({ t, entries, busy, error, onCancel, onConfirm }) {
             disabled: busy === true,
             onClick: onConfirm,
           },
-          busy === true ? t('delete.busy') : t('delete.batchConfirm'),
+          busy === true ? t('delete.busy') : confirmLabel,
         ),
       ),
     },
-    h('div', { className: 'ar-modal__note' }, t('delete.irreversible')),
-    h(
-      'ul',
-      { className: 'ar-pick-list' },
-      visible.map((entry) =>
-        h(
-          'li',
-          { key: entry.bookmark.id, className: 'ar-pick-list__row' },
-          h('span', { className: 'ar-pick-list__path' }, entry.group.name + ' / ' + entry.list.title),
-          h('span', { className: 'ar-pick-list__title', title: entry.bookmark.title }, entry.bookmark.title),
+    note === undefined || note === ''
+      ? null
+      : h('div', { className: 'ar-modal__note' }, note),
+    summary === undefined || summary === ''
+      ? null
+      : h('div', { className: 'ar-modal__hint' }, summary),
+    rows.length === 0
+      ? null
+      : h(
+          'ul',
+          { className: 'ar-pick-list' },
+          rows.map((row, index) =>
+            h(
+              'li',
+              { key: String(index), className: 'ar-pick-list__row' },
+              row.path === undefined || row.path === ''
+                ? null
+                : h('span', { className: 'ar-pick-list__path' }, row.path),
+              h('span', { className: 'ar-pick-list__title', title: row.title }, row.title),
+            ),
+          ),
+          more === undefined || more === ''
+            ? null
+            : h('li', { className: 'ar-pick-list__row ar-pick-list__more' }, more),
         ),
-      ),
-      remaining > 0
-        ? h('li', { className: 'ar-pick-list__row ar-pick-list__more' }, t('delete.moreItems', { n: remaining }))
-        : null,
-    ),
     error === '' || error === null || error === undefined
       ? null
       : h('div', { className: 'ar-modal__error', role: 'alert' }, error),
+  )
+}
+
+/** Delete N selected bookmarks, after one explicit confirmation. */
+function BatchDeleteDialog({ t, entries, busy, error, onCancel, onConfirm }) {
+  const visible = entries.slice(0, 4)
+  const remaining = entries.length - visible.length
+
+  return h(ConfirmDeleteDialog, {
+    t,
+    title: t('delete.batchTitle', { n: entries.length }),
+    note: t('delete.irreversible'),
+    rows: visible.map((entry) => ({
+      path: entry.group.name + ' / ' + entry.list.title,
+      title: entry.bookmark.title,
+    })),
+    more: remaining > 0 ? t('delete.moreItems', { n: remaining }) : '',
+    confirmLabel: t('delete.batchConfirm'),
+    busy,
+    error,
+    onCancel,
+    onConfirm,
+  })
+}
+
+/** Delete one whole group or one list, after previewing what it contains. */
+function StructureDeleteDialog({
+  t,
+  scope,
+  name,
+  lists,
+  bookmarks,
+  rows,
+  more,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}) {
+  const isGroup = scope === 'group'
+  return h(ConfirmDeleteDialog, {
+    t,
+    title: isGroup
+      ? t('delete.groupTitle', { name })
+      : t('delete.listTitle', { name }),
+    note: t('delete.irreversible'),
+    summary: isGroup
+      ? lists === 0 && bookmarks === 0
+        ? ''
+        : t('delete.groupSummary', { lists, bookmarks })
+      : bookmarks === 0
+        ? ''
+        : t('delete.listSummary', { bookmarks }),
+    rows,
+    more,
+    confirmLabel: isGroup ? t('delete.groupConfirm') : t('delete.listConfirm'),
+    busy,
+    error,
+    onCancel,
+    onConfirm,
+  })
+}
+
+/**
+ * Rename a group or list. The current value is preselected so typing replaces
+ * it, while an unchanged submit just closes the modal without a Host write.
+ */
+function RenameDialog({ t, scope, value, busy, error, onCancel, onConfirm, onDirty }) {
+  const [name, setName] = useState(value)
+  const [localError, setLocalError] = useState('')
+  const inputRef = useRef(null)
+
+  const submit = () => {
+    if (busy === true) return
+    const next = name.trim()
+    if (next === '') {
+      setLocalError(t('rename.required'))
+      if (inputRef.current !== null) inputRef.current.focus()
+      return
+    }
+    if (next === value) {
+      onCancel()
+      return
+    }
+    setLocalError('')
+    onConfirm(next)
+  }
+
+  const message = localError !== '' ? localError : error
+  return h(
+    Modal,
+    {
+      title: scope === 'group' ? t('rename.groupTitle') : t('rename.listTitle'),
+      onCancel,
+      busy,
+      initialFocusRef: inputRef,
+      selectInitial: true,
+      width: 'min(420px, 100%)',
+      footer: h(
+        'div',
+        { className: 'ar-modal__actions' },
+        h(
+          'button',
+          { type: 'button', className: 'ar-btn', disabled: busy === true, onClick: onCancel },
+          t('cancel'),
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ar-btn ar-btn--primary',
+            disabled: busy === true,
+            onClick: submit,
+          },
+          busy === true ? t('rename.busy') : t('rename.confirm'),
+        ),
+      ),
+    },
+    h(
+      'label',
+      { className: 'ar-form__field' },
+      h(
+        'span',
+        { className: 'ar-form__label' },
+        scope === 'group' ? t('rename.groupLabel') : t('rename.listLabel'),
+      ),
+      h('input', {
+        className: 'ar-form__input',
+        ref: inputRef,
+        type: 'text',
+        value: name,
+        maxLength: MAX_NAME_LENGTH,
+        spellCheck: false,
+        disabled: busy === true,
+        onChange: (event) => {
+          setName(event.target.value)
+          setLocalError('')
+          if (typeof onDirty === 'function') onDirty()
+        },
+        onKeyDown: (event) => {
+          if (event.key !== 'Enter') return
+          event.preventDefault()
+          submit()
+        },
+      }),
+    ),
+    message === '' || message === null || message === undefined
+      ? null
+      : h('div', { className: 'ar-modal__error', role: 'alert' }, message),
   )
 }
 
@@ -849,6 +1051,8 @@ function ImportDialog({
 module.exports = {
   Modal,
   BatchDeleteDialog,
+  StructureDeleteDialog,
+  RenameDialog,
   MoveDialog,
   SelectionSummary,
   AddBookmarkDialog,

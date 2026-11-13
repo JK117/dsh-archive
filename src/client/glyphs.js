@@ -4,7 +4,8 @@
  * The path data is copied locally instead of importing the Host package so the
  * plugin bundle stays self-contained, but the geometry, weight and sizes follow
  * the host UI. Native names: archive-outline, chevron-right-outline,
- * search-outline, trash-outline, check-outline, close-outline.
+ * search-outline, trash-outline, check-outline, close-outline, ellipsis-outline,
+ * edit-outline.
  */
 const React = require('react')
 const h = React.createElement
@@ -123,6 +124,55 @@ function PlusGlyph({ size }) {
   )
 }
 
+/**
+ * The shared "more actions" trigger. Host menus use three filled 1px dots on
+ * the same 16×16 frame, so it reads as part of the outline icon set.
+ */
+function EllipsisGlyph({ size }) {
+  const px = size === undefined ? 14 : size
+  return h(
+    'svg',
+    {
+      width: px,
+      height: px,
+      viewBox: '0 0 16 16',
+      fill: 'none',
+      'aria-hidden': 'true',
+      focusable: 'false',
+      style: { display: 'block' },
+    },
+    h('path', {
+      d: 'M3 9C3.55228 9 4 8.55228 4 8C4 7.44772 3.55228 7 3 7C2.44772 7 2 7.44772 2 8C2 8.55228 2.44772 9 3 9Z',
+      fill: 'currentColor',
+    }),
+    h('path', {
+      d: 'M8 9C8.55228 9 9 8.55228 9 8C9 7.44772 8.55228 7 8 7C7.44772 7 7 7.44772 7 8C7 8.55228 7.44772 9 8 9Z',
+      fill: 'currentColor',
+    }),
+    h('path', {
+      d: 'M13 9C13.5523 9 14 8.55228 14 8C14 7.44772 13.5523 7 13 7C12.4477 7 12 7.44772 12 8C12 8.55228 12.4477 9 13 9Z',
+      fill: 'currentColor',
+    }),
+  )
+}
+
+/** The rename affordance inside a menu. */
+function EditGlyph({ size }) {
+  return h(
+    Glyph,
+    { size: size === undefined ? 14 : size },
+    h('path', {
+      d: 'M8.85596 2.69971H4.19971C3.37141 2.69971 2.69992 3.37146 2.69971 4.19971V11.8003C2.69992 12.6285 3.37141 13.3003 4.19971 13.3003H11.8003C12.6283 13.2999 13.3001 12.6283 13.3003 11.8003V7.89893H14.3003V11.8003C14.3001 13.1806 13.1806 14.2999 11.8003 14.3003H4.19971C2.81913 14.3003 1.69992 13.1808 1.69971 11.8003V4.19971C1.69992 2.81918 2.81913 1.69971 4.19971 1.69971H8.85596V2.69971Z',
+      fill: 'currentColor',
+      stroke: 'none',
+    }),
+    h('path', {
+      d: 'M7.7849 8.23878L13.888 2.13574',
+      fill: 'none',
+    }),
+  )
+}
+
 /** Import: an arrow dropping into a tray. */
 function ImportGlyph({ size }) {
   return h(
@@ -146,4 +196,6 @@ module.exports = {
   CloseGlyph,
   PlusGlyph,
   ImportGlyph,
+  EllipsisGlyph,
+  EditGlyph,
 }

@@ -70,7 +70,21 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-main__title{flex:0 1 auto;min-width:0;margin:0;font-size:16px;line-height:22px;font-weight:600;letter-spacing:-.005em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ar-group-ink,var(--dsw-alias-label-primary));outline:none}
 .ar-main__meta{flex:none;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
 .ar-main__actions{flex:none;display:flex;align-items:center;gap:4px}
-.ar-main__select[data-active="true"]{background:color-mix(in oklab,var(--dsw-alias-brand-primary) 12%,transparent);color:var(--dsw-alias-brand-primary)}
+/* The shared more menu: one ellipsis trigger and one compact popover, used by the group header and every list header. */
+.ar-more{position:relative;flex:none;display:inline-flex;align-items:center}
+.ar-more__trigger{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;opacity:.68;transition:background-color .12s ease,color .12s ease,opacity .12s ease}
+.ar-more__trigger:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:0;opacity:1}
+.ar-more__trigger:disabled{opacity:.35;cursor:default}
+.ar-sec__tools .ar-more__trigger{color:var(--ar-list-ink-soft,var(--dsw-alias-label-secondary))}
+/* Floating menus use the host menu material: translucent surface + blur, no border, elevation does the lifting. */
+.ar-menu{position:absolute;top:calc(100% + 5px);right:0;z-index:70;min-width:168px;padding:4px;border:0;border-radius:12px;background:var(--dsw-menu-surface-fill,var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base)));-webkit-backdrop-filter:var(--dsw-menu-backdrop-filter,blur(20px) saturate(150%));backdrop-filter:var(--dsw-menu-backdrop-filter,blur(20px) saturate(150%));box-shadow:var(--dsw-elevation-prominent,0 18px 44px rgba(0,0,0,.28));transform-origin:top right;animation:ar-menu-in .14s cubic-bezier(.2,.7,.2,1) both}
+.ar-menu[data-placement="up"]{top:auto;bottom:calc(100% + 5px);transform-origin:bottom right;animation-name:ar-menu-in-up}
+.ar-menu__item{display:flex;align-items:center;gap:10px;width:100%;height:28px;padding:0 7px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px;text-align:left;white-space:nowrap;cursor:pointer}
+.ar-menu__item:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
+.ar-menu__item[data-danger="true"]{color:var(--ar-danger)}
+.ar-menu__icon{flex:none;display:inline-flex;align-items:center;color:var(--dsw-alias-label-secondary)}
+.ar-menu__item[data-danger="true"] .ar-menu__icon{color:var(--ar-danger)}
+.ar-menu__label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .ar-btn{appearance:none;display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 9px;border:.5px solid transparent;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer;transition:background-color .14s ease,color .14s ease}
 .ar-btn:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
 .ar-btn:disabled{opacity:.5;cursor:default}
@@ -83,21 +97,22 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-sections>.ar-sec{border-top:1px solid var(--ar-line)}
 .ar-sections>.ar-sec:first-child{border-top:0}
 .ar-sec__headbar{position:relative;display:flex;align-items:center;height:32px}
-.ar-sec__head{position:relative;display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 36px 0 var(--ar-content-inset);border:0;border-radius:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;font-weight:600;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none}
+.ar-sec__head{position:relative;display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 64px 0 var(--ar-content-inset);border:0;border-radius:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;font-weight:600;text-align:left;cursor:pointer;user-select:none;-webkit-touch-callout:none}
 .ar-sec__headbar[data-add="false"] .ar-sec__head{padding-right:16px}
+.ar-sec__tools{position:absolute;top:calc(50% - 11px);right:16px;display:flex;align-items:center;gap:2px}
 button.ar-sec__head:hover,.ar-sec__headbar:hover button.ar-sec__head:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
 .ar-sec__head[data-static="true"]{cursor:default}
 button.ar-sec__head:disabled{cursor:default}
 button.ar-sec__head:disabled:hover{background:transparent}
 .ar-sec__head:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
-.ar-sec__add{position:absolute;top:50%;right:8px;z-index:1;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--ar-list-ink-soft,var(--dsw-alias-label-secondary));cursor:pointer;opacity:.7;transform:translateY(-50%);transition:background-color .12s ease,color .12s ease,opacity .12s ease}
+.ar-sec__add{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--ar-list-ink-soft,var(--dsw-alias-label-secondary));cursor:pointer;opacity:.7;transition:background-color .12s ease,color .12s ease,opacity .12s ease}
 .ar-sec__add:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-brand-primary);opacity:1}
 .ar-sec__add:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:0;opacity:1}
 .ar-sec__add:disabled{opacity:.35;cursor:default}
 .ar-sec__chev{flex:none;display:inline-flex;align-items:center;color:var(--ar-list-ink-soft,var(--dsw-alias-label-secondary));transition:transform .16s ease}
 .ar-sec[data-open="true"] .ar-sec__chev{transform:rotate(90deg)}
 .ar-sec__title{flex:0 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--ar-list-ink,var(--dsw-alias-label-primary))}
-.ar-sec__count{flex:none;margin-left:auto;font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+.ar-sec__count{flex:none;font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
 /* The card body stays mounted and animates its row from 0fr to 1fr, so both open and close have a height transition; visibility keeps collapsed cards out of the tab order. */
 .ar-sec__body{display:grid;grid-template-rows:0fr;visibility:hidden;transition:grid-template-rows .24s cubic-bezier(.2,.7,.2,1),visibility 0s linear .24s}
 .ar-sec[data-open="true"] .ar-sec__body{grid-template-rows:1fr;visibility:visible;transition:grid-template-rows .24s cubic-bezier(.2,.7,.2,1),visibility 0s}
@@ -134,14 +149,13 @@ button.ar-sec__head:disabled:hover{background:transparent}
 .ar-fav{flex:none;width:18px;height:18px;border-radius:4px;object-fit:contain;transition:opacity .12s ease}
 .ar-fav--letter{display:inline-flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent);color:var(--dsw-alias-label-secondary);font-size:10.5px;font-weight:600;line-height:1}
 .ar-card:hover .ar-fav,.ar-card__link:focus-visible ~ .ar-card__lead .ar-fav,.ar-card[data-selected="true"] .ar-fav{opacity:0}
-.ar-card__check{position:absolute;inset:0;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:1.5px solid var(--dsw-alias-label-tertiary);border-radius:4px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary-inverted);cursor:pointer;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .12s ease,visibility 0s linear .12s,border-color .12s ease,background-color .12s ease}
-.ar-card:hover .ar-card__check,.ar-card__link:focus-visible ~ .ar-card__lead .ar-card__check,.ar-card__check:focus-visible,.ar-card[data-selected="true"] .ar-card__check{opacity:1;visibility:visible;pointer-events:auto;transition:opacity .12s ease,visibility 0s,border-color .12s ease,background-color .12s ease}
+.ar-card__check{position:absolute;inset:0;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:1.5px solid var(--dsw-alias-label-tertiary);border-radius:4px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary-inverted);cursor:pointer;opacity:0;pointer-events:none;transition:opacity .12s ease,border-color .12s ease,background-color .12s ease}
+.ar-card:hover .ar-card__check,.ar-card__link:focus-visible ~ .ar-card__lead .ar-card__check,.ar-card__check:focus-visible,.ar-card[data-selected="true"] .ar-card__check{opacity:1;pointer-events:auto;transition:opacity .12s ease,border-color .12s ease,background-color .12s ease}
 /* Selection mode only changes what a click does. Unselected cards keep their
    favicon and stay visually identical to the browsing state; their box appears
    on hover or keyboard focus, while selected cards keep the checked box. The
-   idle box keeps its visibility so Tab can still reach it — the keyboard
-   focus rule above then reveals it. */
-.ar-card[data-selecting="true"] .ar-card__check{visibility:visible}
+   box stays in the tab order (opacity only) so the keyboard entry does not need
+   the old header button; focus-visible reveals it. */
 .ar-card__check:hover{border-color:var(--dsw-alias-brand-primary)}
 .ar-card__check[data-checked="true"]{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted)}
 .ar-card__check:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
@@ -249,15 +263,18 @@ button.ar-sec__head:disabled:hover{background:transparent}
 .ar-form__target{display:flex;flex-direction:column;gap:3px;margin-bottom:12px;padding:8px 10px;border:1px solid var(--ar-line);border-radius:6px;background:var(--dsw-alias-bg-layer-1)}
 .ar-form__target-value{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:12px;line-height:17px;color:var(--dsw-alias-label-primary)}
 .ar-import__meta{margin-top:8px;color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:16px;font-variant-numeric:tabular-nums}
+@media (hover:hover){.ar-more__trigger:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);opacity:1}.ar-sec__tools .ar-more__trigger:hover{color:var(--dsw-alias-brand-primary)}.ar-menu__item:hover{background:var(--dsw-alias-interactive-bg-hover)}.ar-menu__item[data-danger="true"]:hover{background:color-mix(in oklab,var(--ar-danger) 12%,transparent);color:var(--ar-danger)}}
 @keyframes ar-fade-in{from{opacity:0}}
 @keyframes ar-confirm-in{from{opacity:0;transform:translateX(10px) scale(.96)}}
 @keyframes ar-confirm-out{to{opacity:0;transform:translateX(10px) scale(.96)}}
 @keyframes ar-view-in{from{opacity:0;transform:translateY(var(--ar-shift,6px))}}
 @keyframes ar-bar-in{from{opacity:0;transform:translateY(8px)}}
 @keyframes ar-modal-in{from{opacity:0;transform:translateY(4px) scale(.985)}}
+@keyframes ar-menu-in{from{opacity:0;transform:translateY(-4px) scale(.98)}}
+@keyframes ar-menu-in-up{from{opacity:0;transform:translateY(4px) scale(.98)}}
 .ar-toast{animation:ar-fade-in .16s ease both}
 @media (max-width:720px){.ar-bar-dock{left:0}.ar-modal{padding:12px}.ar-modal__panel{width:100%}}
-@media (pointer:coarse){.ar-resizer{width:18px}}
-@media (prefers-reduced-motion:reduce){.ar-toast,.ar-view,.ar-sec__body,.ar-sec__chev,.ar-grid,.ar-card,.ar-card__check,.ar-card__trash,.ar-card__confirm,.ar-card__confirm[data-leaving="true"],.ar-bar,.ar-summary,.ar-modal,.ar-modal__panel,.ar-resizer::before{animation:none;transition:none}}`
+@media (pointer:coarse){.ar-resizer{width:18px}.ar-card__check{opacity:1;pointer-events:auto}}
+@media (prefers-reduced-motion:reduce){.ar-toast,.ar-view,.ar-sec__body,.ar-sec__chev,.ar-grid,.ar-card,.ar-card__check,.ar-card__trash,.ar-card__confirm,.ar-card__confirm[data-leaving="true"],.ar-bar,.ar-summary,.ar-modal,.ar-modal__panel,.ar-menu,.ar-resizer::before{animation:none;transition:none}}`
 
 module.exports = { CSS }

@@ -70,6 +70,23 @@ function entryMap(entries) {
   return map
 }
 
+/** Drops selected ids whose list / group a structural delete removed. */
+function pruneSelected(selected, collection) {
+  if (selected.size === 0) return selected
+  const valid = new Set()
+  for (const group of collection?.groups ?? []) {
+    for (const list of group.lists ?? []) {
+      for (const bookmark of list.bookmarks ?? []) valid.add(bookmark.id)
+    }
+  }
+
+  const next = new Set()
+  for (const id of selected) {
+    if (valid.has(id)) next.add(id)
+  }
+  return next.size === selected.size ? selected : next
+}
+
 module.exports = {
   toggleId,
   selectedEntries,
@@ -78,4 +95,5 @@ module.exports = {
   hiddenByQuery,
   targetStats,
   entryMap,
+  pruneSelected,
 }

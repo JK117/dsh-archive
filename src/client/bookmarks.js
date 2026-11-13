@@ -2,7 +2,14 @@
 const React = require('react')
 const h = React.createElement
 const { useState, useEffect, useRef } = React
-const { Chevron, CheckGlyph, TrashGlyph, PlusGlyph } = require('./glyphs.js')
+const {
+  Chevron,
+  CheckGlyph,
+  TrashGlyph,
+  PlusGlyph,
+  EditGlyph,
+} = require('./glyphs.js')
+const { MoreMenu } = require('./menu.js')
 const { Sortable } = require('./sortable.js')
 
 /** Keep in sync with the .16s exit animation in styles.js; 20ms covers a frame. */
@@ -215,10 +222,9 @@ function BookmarkCard({
           role: 'checkbox',
           'aria-checked': selected ? 'true' : 'false',
           'aria-label': t('select.cardAria', { title: bookmark.title }),
-          'aria-hidden': selectionMode ? undefined : 'true',
           'data-checked': selected ? 'true' : 'false',
           'data-no-drag': '1',
-          tabIndex: selectionMode && !confirming ? 0 : -1,
+          tabIndex: confirming ? -1 : 0,
           disabled: busy === true,
           onClick: (event) => {
             event.preventDefault()
@@ -322,6 +328,8 @@ function ListSection({
   deleteBusy,
   onToggle,
   onAdd,
+  onRename,
+  onDelete,
   onOpen,
   onToggleSelect,
   onRequestDelete,
@@ -331,8 +339,8 @@ function ListSection({
 }) {
   const inner = [
     h('span', { key: 'title', className: 'ar-sec__title' }, list.title),
-    h(Chevron, { key: 'chev', open }),
     h('span', { key: 'count', className: 'ar-sec__count' }, list.count),
+    h(Chevron, { key: 'chev', open }),
   ]
   const sortAttrs = {
     'data-sort-id': list.id,
@@ -358,25 +366,48 @@ function ListSection({
       )
 
   const addLabel = t('add.toListAria', { list: list.title })
-  const addButton =
+  const tools =
     canMutate === true
       ? h(
-          'button',
-          {
-            type: 'button',
-            className: 'ar-sec__add',
-            title: addLabel,
-            'aria-label': addLabel,
-            'data-list-add': list.id,
-            'data-no-drag': '1',
-            disabled: busy === true,
-            onClick: (event) => {
-              event.preventDefault()
-              event.stopPropagation()
-              onAdd(list.id)
+          'div',
+          { className: 'ar-sec__tools' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'ar-sec__add',
+              title: addLabel,
+              'aria-label': addLabel,
+              'data-list-add': list.id,
+              'data-no-drag': '1',
+              disabled: busy === true,
+              onClick: (event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                onAdd(list.id)
+              },
             },
-          },
-          h(PlusGlyph, { size: 14 }),
+            h(PlusGlyph, { size: 14 }),
+          ),
+          h(MoreMenu, {
+            label: t('menu.listAria', { name: list.title }),
+            disabled: busy === true,
+            items: [
+              {
+                id: 'rename',
+                label: t('menu.rename'),
+                icon: h(EditGlyph, { size: 14 }),
+                onSelect: (trigger) => onRename(list, trigger),
+              },
+              {
+                id: 'delete',
+                label: t('menu.deleteList'),
+                icon: h(TrashGlyph, { size: 14 }),
+                danger: true,
+                onSelect: (trigger) => onDelete(list, trigger),
+              },
+            ],
+          }),
         )
       : null
 
@@ -396,7 +427,7 @@ function ListSection({
       'div',
       { className: 'ar-sec__headbar', 'data-add': canMutate === true ? 'true' : 'false' },
       head,
-      addButton,
+      tools,
     ),
     h(
       'div',
