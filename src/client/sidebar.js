@@ -1,9 +1,10 @@
 /** The narrow left rail: group selection, drag order, and global stats. */
 const React = require('react')
 const h = React.createElement
+const { useCallback, useEffect, useRef } = React
 const { GroupRow } = require('./bookmarks.js')
 const { Sortable } = require('./sortable.js')
-const { TONE_COUNT } = require('./constants.js')
+const { TONE_COUNT, RAIL_SCROLLBAR_HIDE_MS } = require('./constants.js')
 
 function GroupRail({
   t,
@@ -19,6 +20,30 @@ function GroupRail({
   onSelect,
   onReorder,
 }) {
+  const scrollTimerRef = useRef(0)
+
+  /* The rail's scrollbar is an overlay hint rather than permanent chrome:
+     reveal it on scroll, then put it away once the list has been still for
+     RAIL_SCROLLBAR_HIDE_MS. The attribute is written straight to the DOM, so
+     scrolling never re-renders the list. */
+  const handleScroll = useCallback((event) => {
+    const list = event.currentTarget
+    if (list === null || list === undefined) return
+    list.setAttribute('data-scrolling', 'true')
+    clearTimeout(scrollTimerRef.current)
+    scrollTimerRef.current = setTimeout(() => {
+      scrollTimerRef.current = 0
+      list.removeAttribute('data-scrolling')
+    }, RAIL_SCROLLBAR_HIDE_MS)
+  }, [])
+
+  useEffect(
+    () => () => {
+      clearTimeout(scrollTimerRef.current)
+    },
+    [],
+  )
+
   return h(
     'aside',
     { className: 'ar-side', key: 'side' },
@@ -30,6 +55,7 @@ function GroupRail({
         ids: groupIds,
         axis: 'y',
         disabled: groupIds.length < 2 || busy === true || selectionMode === true || dragDisabled === true,
+        onScroll: handleScroll,
         onReorder,
         'aria-label': t('groups'),
       },

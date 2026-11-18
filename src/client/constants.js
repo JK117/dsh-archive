@@ -36,6 +36,13 @@ const MAX_NAME_LENGTH = 200
 const TONE_COUNT = 8
 
 /**
+ * The left rail's scrollbar is an overlay cue rather than permanent chrome:
+ * it appears while the group list scrolls and goes away this long after the
+ * last scroll event.
+ */
+const RAIL_SCROLLBAR_HIDE_MS = 2000
+
+/**
  * The draggable divider between the group rail and the bookmarks column. The
  * width lives in localStorage as a plain pixel number; the minimum main-column
  * width keeps the grid readable when the panel itself is narrow.
@@ -61,6 +68,7 @@ module.exports = {
   MAX_IMPORT_BYTES,
   MAX_NAME_LENGTH,
   TONE_COUNT,
+  RAIL_SCROLLBAR_HIDE_MS,
   RAIL_WIDTH_KEY,
   RAIL_WIDTH_DEFAULT,
   RAIL_WIDTH_MIN,

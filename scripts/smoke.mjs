@@ -334,6 +334,15 @@ async function testStyles() {
   assert.match(CSS, /@media \(hover:hover\)\{[^}]*\.ar-more__trigger:hover/)
   assert.doesNotMatch(CSS, /\.ar-main__select/)
   assert.match(CSS, /@media \(pointer:coarse\)\{\.ar-resizer\{width:18px\}\.ar-card__check\{opacity:1/)
+  // The rail's scrollbar is an overlay cue: transparent at rest, visible while
+  // scrolling; the checkbox uses a light 1px outline instead of a heavy ring.
+  assert.match(CSS, /\.ar-side__list::-webkit-scrollbar-thumb\{[^}]*background-color:transparent/)
+  assert.match(
+    CSS,
+    /\.ar-side__list\[data-scrolling="true"\]::-webkit-scrollbar-thumb\{[^}]*--dsw-alias-scrollbar-bg-l1/,
+  )
+  assert.match(CSS, /\.ar-card__check\{[^}]*border:1px solid var\(--dsw-alias-border-l4\)/)
+  assert.doesNotMatch(CSS, /\.ar-card__check\{[^}]*border:1\.5px/)
   assert.doesNotMatch(CSS, /\.ar-sec__add\{[^}]*position:absolute/)
   // Split handle: the rail no longer draws its own border; the handle's line
   // is the divider and the body is its positioning context.
@@ -341,6 +350,100 @@ async function testStyles() {
   assert.match(CSS, /\.ar-resizer\{[^}]*left:var\(--ar-rail-width\)/)
   assert.match(CSS, /\.ar-resizer\{[^}]*cursor:col-resize/)
   assert.doesNotMatch(CSS, /\.ar-side\{[^}]*border-right/)
+}
+
+/**
+ * The rail's scroll handler writes the reveal attribute straight to the DOM and
+ * clears it after the idle delay. The React stub's effect is a no-op, so this
+ * only exercises the handler contract, not the browser's scroll events.
+ */
+async function testRailScrollHint() {
+  const originalLoad = Module._load
+  const ReactStub = {
+    createElement(type, props, ...children) {
+      const next = { ...(props ?? {}) }
+      if (children.length === 1) next.children = children[0]
+      else if (children.length > 1) next.children = children
+      return { type, props: next }
+    },
+    useEffect() {},
+    useLayoutEffect() {},
+    useMemo(factory) {
+      return factory()
+    },
+    useCallback(callback) {
+      return callback
+    },
+    useRef(value) {
+      return { current: value }
+    },
+    useState(initial) {
+      return [typeof initial === 'function' ? initial() : initial, () => {}]
+    },
+  }
+  Module._load = function (request, parent, isMain) {
+    if (request === 'react') return ReactStub
+    return originalLoad.call(this, request, parent, isMain)
+  }
+  try {
+    const { GroupRail } = requireFromSource('./sidebar.js')
+    const { RAIL_SCROLLBAR_HIDE_MS } = requireFromSource('./constants.js')
+    assert.equal(RAIL_SCROLLBAR_HIDE_MS, 2000)
+
+    const tree = GroupRail({
+      t: (key) => key,
+      stats: { groups: 0, lists: 0, bookmarks: 0 },
+      groups: [],
+      groupIds: [],
+      groupMatches: null,
+      selectedByGroup: new Map(),
+      activeGroupId: null,
+      selectionMode: false,
+      busy: false,
+      dragDisabled: false,
+      onSelect() {},
+      onReorder() {},
+    })
+    const list = tree.props.children.find(
+      (node) => node !== null && typeof node === 'object' && node.props?.className === 'ar-side__list',
+    )
+    assert.ok(list && typeof list.props.onScroll === 'function')
+
+    const element = {
+      attributes: new Map(),
+      setAttribute(name, value) {
+        this.attributes.set(name, value)
+      },
+      removeAttribute(name) {
+        this.attributes.delete(name)
+      },
+      hasAttribute(name) {
+        return this.attributes.has(name)
+      },
+    }
+    const realSetTimeout = globalThis.setTimeout
+    const realClearTimeout = globalThis.clearTimeout
+    let scheduled = null
+    globalThis.setTimeout = (callback, delay) => {
+      scheduled = { callback, delay }
+      return 1
+    }
+    globalThis.clearTimeout = () => {
+      scheduled = null
+    }
+    try {
+      list.props.onScroll({ currentTarget: element })
+      assert.equal(element.hasAttribute('data-scrolling'), true)
+      assert.equal(scheduled?.delay, 2000)
+      scheduled.callback()
+      assert.equal(element.hasAttribute('data-scrolling'), false)
+    } finally {
+      globalThis.setTimeout = realSetTimeout
+      globalThis.clearTimeout = realClearTimeout
+    }
+  } finally {
+    Module._load = originalLoad
+  }
 }
 
 async function testRailSizing() {
@@ -1296,6 +1399,7 @@ await test('rename remap', testRenameRemap)
 await test('dialog render', testDialogRender)
 await test('client bundle', testClientBundle)
 await test('styles', testStyles)
+await test('rail scroll hint', testRailScrollHint)
 await test('rail sizing', testRailSizing)
 await test('order helpers', testOrderHelpers)
 await test('selection helpers', testSelectionHelpers)

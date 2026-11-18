@@ -625,6 +625,13 @@ const MAX_NAME_LENGTH = 200
 const TONE_COUNT = 8
 
 /**
+ * The left rail's scrollbar is an overlay cue rather than permanent chrome:
+ * it appears while the group list scrolls and goes away this long after the
+ * last scroll event.
+ */
+const RAIL_SCROLLBAR_HIDE_MS = 2000
+
+/**
  * The draggable divider between the group rail and the bookmarks column. The
  * width lives in localStorage as a plain pixel number; the minimum main-column
  * width keeps the grid readable when the panel itself is narrow.
@@ -650,6 +657,7 @@ module.exports = {
   MAX_IMPORT_BYTES,
   MAX_NAME_LENGTH,
   TONE_COUNT,
+  RAIL_SCROLLBAR_HIDE_MS,
   RAIL_WIDTH_KEY,
   RAIL_WIDTH_DEFAULT,
   RAIL_WIDTH_MIN,
@@ -4848,9 +4856,10 @@ module.exports = {
 /** The narrow left rail: group selection, drag order, and global stats. */
 const React = require('react')
 const h = React.createElement
+const { useCallback, useEffect, useRef } = React
 const { GroupRow } = require('./bookmarks.js')
 const { Sortable } = require('./sortable.js')
-const { TONE_COUNT } = require('./constants.js')
+const { TONE_COUNT, RAIL_SCROLLBAR_HIDE_MS } = require('./constants.js')
 
 function GroupRail({
   t,
@@ -4866,6 +4875,30 @@ function GroupRail({
   onSelect,
   onReorder,
 }) {
+  const scrollTimerRef = useRef(0)
+
+  /* The rail's scrollbar is an overlay hint rather than permanent chrome:
+     reveal it on scroll, then put it away once the list has been still for
+     RAIL_SCROLLBAR_HIDE_MS. The attribute is written straight to the DOM, so
+     scrolling never re-renders the list. */
+  const handleScroll = useCallback((event) => {
+    const list = event.currentTarget
+    if (list === null || list === undefined) return
+    list.setAttribute('data-scrolling', 'true')
+    clearTimeout(scrollTimerRef.current)
+    scrollTimerRef.current = setTimeout(() => {
+      scrollTimerRef.current = 0
+      list.removeAttribute('data-scrolling')
+    }, RAIL_SCROLLBAR_HIDE_MS)
+  }, [])
+
+  useEffect(
+    () => () => {
+      clearTimeout(scrollTimerRef.current)
+    },
+    [],
+  )
+
   return h(
     'aside',
     { className: 'ar-side', key: 'side' },
@@ -4877,6 +4910,7 @@ function GroupRail({
         ids: groupIds,
         axis: 'y',
         disabled: groupIds.length < 2 || busy === true || selectionMode === true || dragDisabled === true,
+        onScroll: handleScroll,
         onReorder,
         'aria-label': t('groups'),
       },
@@ -5687,6 +5721,17 @@ body[data-ds-dark-theme] .ar-root{--ar-card-lift:8%;--ar-card-lift-hover:14%}
 .ar-side{flex:none;display:flex;flex-direction:column;width:var(--ar-rail-width);min-height:0}
 .ar-side__head{flex:none;display:flex;align-items:center;gap:6px;height:40px;padding:0 16px;border-bottom:1px solid var(--ar-line);color:var(--dsw-alias-label-secondary);font-size:11.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
 .ar-side__list{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:1px;padding:6px 8px 10px}
+/* The rail's scrollbar is an overlay cue, not permanent chrome: the thumb is
+   transparent at rest, takes the host scrollbar token while the list scrolls,
+   and goes away two seconds after the last scroll event (data-scrolling is
+   removed by sidebar.js). The bar keeps its 5px slot either way, so revealing
+   it never reflows the rows. */
+.ar-side__list::-webkit-scrollbar-thumb{background-color:transparent}
+.ar-side__list[data-scrolling="true"]::-webkit-scrollbar-thumb{background-color:var(--dsw-alias-scrollbar-bg-l1)}
+@media (hover:hover){
+  .ar-side__list::-webkit-scrollbar-thumb:hover{background-color:transparent}
+  .ar-side__list[data-scrolling="true"]::-webkit-scrollbar-thumb:hover{background-color:var(--dsw-alias-scrollbar-hover-l1)}
+}
 .ar-side__foot{flex:none;display:flex;flex-direction:column;gap:1px;padding:10px 16px 12px;border-top:1px solid var(--ar-line);color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:16px;font-variant-numeric:tabular-nums}
 .ar-side__foot span{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 /* The split handle sits on the divider, extending only into the right column's
@@ -5803,7 +5848,9 @@ button.ar-sec__head:disabled:hover{background:transparent}
 .ar-fav{flex:none;width:18px;height:18px;border-radius:4px;object-fit:contain;transition:opacity .12s ease}
 .ar-fav--letter{display:inline-flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent);color:var(--dsw-alias-label-secondary);font-size:10.5px;font-weight:600;line-height:1}
 .ar-card:hover .ar-fav,.ar-card__link:focus-visible ~ .ar-card__lead .ar-fav,.ar-card[data-selected="true"] .ar-fav{opacity:0}
-.ar-card__check{position:absolute;inset:0;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:1.5px solid var(--dsw-alias-label-tertiary);border-radius:4px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary-inverted);cursor:pointer;opacity:0;pointer-events:none;transition:opacity .12s ease,border-color .12s ease,background-color .12s ease}
+/* The box only appears while hovered / focused / selected, so it stays a light
+   affordance: a 1px neutral outline instead of the old 1.5px label-grey ring. */
+.ar-card__check{position:absolute;inset:0;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:1px solid var(--dsw-alias-border-l4);border-radius:4px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary-inverted);cursor:pointer;opacity:0;pointer-events:none;transition:opacity .12s ease,border-color .12s ease,background-color .12s ease}
 .ar-card:hover .ar-card__check,.ar-card__link:focus-visible ~ .ar-card__lead .ar-card__check,.ar-card__check:focus-visible,.ar-card[data-selected="true"] .ar-card__check{opacity:1;pointer-events:auto;transition:opacity .12s ease,border-color .12s ease,background-color .12s ease}
 /* Selection mode only changes what a click does. Unselected cards keep their
    favicon and stay visually identical to the browsing state; their box appears
