@@ -1,6 +1,6 @@
 {
   "name": "dsh-archive",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Archive (资料库): a DSH global panel for a curated bookmark library — browse groups and collapsible lists, add single links or import a JSON library, rename or delete groups/lists, and open cards in the default browser.",
   "type": "module",
@@ -27,7 +27,7 @@
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
-    "data/bookmarks.json",
+    "data/bookmarks.sample.json",
     "README.md"
   ],
   "dsh": {

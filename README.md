@@ -1,12 +1,12 @@
 # 资料库（dsh-archive）
 
-DSH 全局面板插件：把插件自带的一份书签库渲染成两级资料库。左栏是较窄的**一级分组列表**，右栏是当前分组的**可展开 / 收起的二级列表**，展开后是带 favicon 和标题的书签卡片，点击卡片在**系统默认浏览器**中打开链接。书签库可以在页面内**新增**、**导入**、**重命名**、**删除**和**移动**（永久写回 `data/bookmarks.json`）。
+DSH 全局面板插件：把插件自带的书签库渲染成两级资料库。左栏是较窄的**一级分组列表**，右栏是当前分组的**可展开 / 收起的二级列表**，展开后是带 favicon 和标题的书签卡片，点击卡片在**系统默认浏览器**中打开链接。书签库可以在页面内**新增**、**导入**、**重命名**、**删除**和**移动**（永久写回 `data/bookmarks.json`）。仓库只发布一份 AI 示例种子，首次运行会复制成本地数据文件，个人书签库不会进入版本控制。
 
 - 入口：左侧栏顶部面板行（`sidebar.panellist`，Plugins / Scheduled tasks / Travel Plotter 旁边）的**资料库**。
 - 布局：页头（一级标题「资料库」+ 新增 / 导入按钮 + 搜索框）→ 主体左右分栏；左栏默认 `240px`（分组列表 + 底部规模统计，可在 `160–420px` 间拖动调整，双击复位），右栏自适应并独立滚动。左右两栏的栏头同高（`40px`）、同一条基线上，列表起点也对齐；右栏的分组标题与下方列表标题文字左边缘对齐（`24px` 栏线）。两个值收敛为 `.ar-root` 上的 `--ar-rail-width` / `--ar-content-inset`，底部批量操作栏的左侧起点也复用同一个栏宽。
 - 字号层级：页头 `18px` ＞ 右栏分组标题 `16px` ＞ 列表标题 `14px` ＞ 左栏分组名 / 卡片 `13px` ＞ 元信息 `12px`。
 - 图标：面板内所有 glyph 统一采用宿主 Web UI 的 16×16 线性图标集——`@deepseek-ai/dsh-client-ui-primitives` 中的 `archive-outline` / `chevron-right-outline` / `search-outline` / `trash-outline` / `check-outline` / `close-outline` / `ellipsis-outline` / `edit-outline`，Regular 权重为 `1px` 描边、Medium 为 `1.3px`。路径数据内联在 `src/client/glyphs.js`，插件 bundle 保持自包含、不新增 Host 包依赖；侧栏面板图标沿用同一 archive 几何，打开时切换为 Medium。图标尺寸也按宿主惯例：列表箭头 / 搜索 / 垃圾桶 / 更多菜单 / 重命名 `14px`，勾选框与已选清单关闭 `12px`，页头与侧栏 archive `20px`。分组标题和列表标题右侧的更多操作都使用宿主菜单同款的三个实心圆点。
-- 数据：首次加载即带一份真实书签库（`data/bookmarks.json`，39 个分组 / 173 个列表 / 460 个书签）。
+- 数据：仓库只提交一份 AI 示例种子（`data/bookmarks.sample.json`，1 个分组 / 5 个列表 / 13 个书签）；首次加载复制为 `data/bookmarks.json`，之后它就是你的个人数据，不进入版本控制。
 - 语言：界面文案走 Client locale，中文 / English 各一份；跟随 DSH 语言设置。
 - 主题：只用宿主主题 token（`--dsw-alias-*` 与 `--dsw-shadow-*`），明暗主题都跟随宿主。
 
@@ -59,12 +59,18 @@ dsh-archive/
 │   └── smoke.mjs          # 无浏览器冒烟测试
 ├── icon.svg               # 插件图标（资料盒）
 ├── locale/{zh,en}.json    # meta.title / meta.description（插件管理页展示）
-└── data/bookmarks.json    # 书签库（插件自有格式）
+└── data/
+    ├── bookmarks.sample.json  # 随仓库发布的 AI 种子
+    └── bookmarks.json         # 首次运行生成的真实数据（已 gitignore）
 ```
 
 ## 数据格式
 
 `data/bookmarks.json` 是插件自己的书签库，不再沿用浏览器扩展的导出结构，也不再包含导入器留下的 `type` / `customTitle` / `description` / `labelIds` / `favIconUrl` 等字段。只保留当前页面用到的层级、标题、链接和图标：
+
+**两个文件**：`data/bookmarks.sample.json` 随仓库发布（只有 AI 示例分组）；`data/bookmarks.json` 是运行时数据。首次读取时如果后者不存在，Host 会把种子逐字节复制过去；之后所有新增 / 导入 / 重命名 / 删除 / 移动都只改运行时文件，种子不会被改写。运行时文件已在 `.gitignore` 中，不会出现在 `git status` 或发布包里。
+
+想恢复成示例库：备份现有文件后删除 `data/bookmarks.json`，下一次刷新页面会自动从种子重建。`data/bookmarks.json.bak` 是每次写盘前的整文件备份，同样不提交。
 
 ```json
 {
@@ -155,7 +161,29 @@ dsh-archive/
 # target: <本目录的绝对路径>
 ```
 
-安装后侧栏出现「资料库」图标，点击进入面板。`client.js` 是构建产物；修改 `src/client/` 后运行 `npm run build:client`，再刷新 DSH Web 页面加载新的浏览器模块（不是热更新）。Host 半（`index.js` / `routes.js` / `lib/`）的改动在 DSH 重启或插件重新加载后生效。写操作会直接修改插件目录下的 `data/bookmarks.json`，重装 / 覆盖数据前先备份。
+安装后侧栏出现「资料库」图标，点击进入面板。首次打开时若 `data/bookmarks.json` 不存在，会自动从 `data/bookmarks.sample.json` 生成 AI 示例库；写操作会直接修改插件目录下的 `data/bookmarks.json`，重装 / 覆盖目录前先备份这个文件。`client.js` 是构建产物；修改 `src/client/` 后运行 `npm run build:client`，再刷新 DSH Web 页面加载新的浏览器模块（不是热更新）。Host 半（`index.js` / `routes.js` / `lib/`）的改动在 DSH 重启或插件重新加载后生效。
+
+### 发布检查
+
+`data/bookmarks.json` 是用户数据，永远不要提交，也不要打进发布包：
+
+```bash
+git ls-files data                    # 只应出现 data/bookmarks.sample.json
+git check-ignore -v data/bookmarks.json
+npm pack --dry-run                   # 文件列表不应包含 data/bookmarks.json
+```
+
+种子由当前书签库里的 AI 分组生成。AI 分组内容更新后，维护者用下面的命令刷新种子（不要在种子之外加入个人分组）：
+
+```bash
+node -e '
+const fs = require("fs")
+const raw = JSON.parse(fs.readFileSync("data/bookmarks.json", "utf8"))
+const ai = raw.groups.find((g) => g.name === "AI")
+if (!ai) throw new Error("AI group not found")
+fs.writeFileSync("data/bookmarks.sample.json", JSON.stringify({ groups: [ai] }, null, 2) + "\n")
+'
+```
 
 ## 开发
 
@@ -163,7 +191,7 @@ Client 源码按职责拆在 `src/client/`：`index.js` 只做注册，`panel.js
 
 ```bash
 npm run build:client   # 重写 client.js
-npm test               # 数据模型、空结构、导入清洗、稳定 ID、增删改 / 重命名、bundle、顺序、选择、存储、路由
+npm test               # 数据模型、种子首次生成、空结构、导入清洗、稳定 ID、增删改 / 重命名、bundle、顺序、选择、存储、路由
 npm run check          # 构建一致性 + 语法 + 冒烟检查
 ```
 
@@ -190,6 +218,7 @@ curl -s -X POST -H 'content-type: application/json' \
 ## 已知限制
 
 - **永久删除**：没有回收站 / 撤销；只有写前 `.bak` 整文件备份，不在 UI 提供恢复入口。
+- **数据目录必须可写**：插件目录只读时，首次加载无法生成 `data/bookmarks.json`，面板会显示加载失败。`data/bookmarks.json` 与 `.bak` 都只在本机；`git clean -xdf`、重新克隆或覆盖插件目录都会丢失它们，操作前先备份。
 - 页面内支持新增 / 导入 / 重命名 / 删除 / 移动书签和分组 / 列表，但不支持编辑已有书签的标题 / URL；空分组 / 空列表可以由“删掉最后一张卡片”、删除列表或导入产生，但界面不提供单独新建空结构的入口（新增书签时会顺带创建目标结构）。
 - 导入按名称合并，无法在导入时选择“替换整个库”；同一链接可以存在于不同列表，同一列表内不允许重复 URL。
 - 数据格式升级后旧的 `dsh-archive:order:v2` / `state:v1` 不再读取，首次打开按文件顺序显示；重新拖动 / 折叠会写入新的 `v3` / `v2`。

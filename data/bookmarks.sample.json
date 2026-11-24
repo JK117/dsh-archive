@@ -1,0 +1,99 @@
+{
+  "groups": [
+    {
+      "name": "AI",
+      "lists": [
+        {
+          "title": "DeepSeek",
+          "bookmarks": [
+            {
+              "title": "DeepSeek - 探索未至之境",
+              "url": "https://chat.deepseek.com/",
+              "icon": "https://fe-static.deepseek.com/chat/favicon.svg"
+            },
+            {
+              "title": "DeepSeek Platform",
+              "url": "https://platform.deepseek.com/usage",
+              "icon": "https://fe-static.deepseek.com/platform/favicon.svg"
+            },
+            {
+              "title": "首次调用 API | DeepSeek API Docs",
+              "url": "https://api-docs.deepseek.com/zh-cn/",
+              "icon": "https://api-docs.deepseek.com/zh-cn/img/favicon.svg"
+            }
+          ]
+        },
+        {
+          "title": "OpenAI",
+          "bookmarks": [
+            {
+              "title": "ChatGPT",
+              "url": "https://chatgpt.com/",
+              "icon": "https://chatgpt.com/favicon.ico"
+            },
+            {
+              "title": "Platform Home Page - OpenAI API",
+              "url": "https://platform.openai.com/home",
+              "icon": "https://platform.openai.com/favicon-platform-alt.svg"
+            },
+            {
+              "title": "OpenAI API Proxy",
+              "url": "https://www.openai-proxy.com/",
+              "icon": "https://www.openai-proxy.com/favicon.ico"
+            }
+          ]
+        },
+        {
+          "title": "Anthropic",
+          "bookmarks": [
+            {
+              "title": "Claude",
+              "url": "https://claude.ai/new",
+              "icon": "https://claude.ai/favicon.ico"
+            },
+            {
+              "title": "Claude Code 概述 - Claude Code Docs",
+              "url": "https://code.claude.com/docs/zh-CN/overview",
+              "icon": "https://code.claude.com/docs/_mintlify/favicons/claude-code/pLsy-mRpNksna2sx/_generated/favicon/favicon-32x32.png"
+            }
+          ]
+        },
+        {
+          "title": "MiniMax",
+          "bookmarks": [
+            {
+              "title": "MiniMax Agent: 简单指令, 无限可能",
+              "url": "https://agent.minimaxi.com/",
+              "icon": "https://agent.minimaxi.com/assets/logo/favicon_v2.png?v=4"
+            },
+            {
+              "title": "账户信息 - MiniMax 开放平台",
+              "url": "https://platform.minimaxi.com/user-center/basic-information",
+              "icon": "https://filecdn.minimax.chat/public/25289820-59cd-4365-9829-a3f32b365451.ico"
+            },
+            {
+              "title": "MiniMax",
+              "url": "https://www.minimaxi.com/",
+              "icon": "https://www.minimaxi.com/favicon.ico"
+            }
+          ]
+        },
+        {
+          "title": "Google",
+          "bookmarks": [
+            {
+              "title": "Google Gemini",
+              "url": "https://gemini.google.com/app?referrer=AISTUDIO",
+              "icon": "https://www.gstatic.com/lamda/images/gemini_sparkle_aurora_33f86dc0c0257da337c63.svg"
+            },
+            {
+              "title": "Google AI Studio",
+              "url": "https://aistudio.google.com/prompts/new_chat?utm_source=deepmind.google&utm_medium=referral&utm_campaign=gdm&utm_content=",
+              "icon": "https://www.gstatic.com/aistudio/ai_studio_favicon_2_32x32.png"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

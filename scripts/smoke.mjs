@@ -29,8 +29,12 @@ function test(name, fn) {
 }
 
 async function testDataModel() {
-  const raw = JSON.parse((await readFile(path.join(ROOT, 'data', 'bookmarks.json'), 'utf8')).replace(/^\uFEFF/, ''))
+  const raw = JSON.parse((await readFile(path.join(ROOT, 'data', 'bookmarks.sample.json'), 'utf8')).replace(/^\uFEFF/, ''))
   assert.deepEqual(Object.keys(raw), ['groups'])
+  assert.equal(raw.groups.length, 1)
+  assert.equal(raw.groups[0].name, 'AI')
+  assert.ok(raw.groups[0].lists.length > 0)
+  assert.ok(raw.groups[0].lists.some((list) => list.bookmarks.length > 0))
 
   for (const group of raw.groups) {
     assert.deepEqual(Object.keys(group).sort(), ['lists', 'name'])
@@ -61,6 +65,80 @@ async function testDataModel() {
   assert.match(library.groups[0].lists[0].id, /^l_[A-Za-z0-9_-]+$/)
   assert.match(library.groups[0].lists[0].bookmarks[0].id, /^b_[A-Za-z0-9_-]+$/)
   assert.equal(library.groups[0].lists[0].count, library.groups[0].lists[0].bookmarks.length)
+}
+
+async function testSeedBootstrap() {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'dsh-archive-seed-'))
+  try {
+    const dataFile = path.join(dir, 'bookmarks.json')
+    const sampleFile = path.join(dir, 'bookmarks.sample.json')
+    const sample = {
+      groups: [
+        {
+          name: 'AI',
+          lists: [
+            {
+              title: 'DeepSeek',
+              bookmarks: [
+                {
+                  title: 'DeepSeek',
+                  url: 'https://www.deepseek.com/',
+                  icon: 'https://www.deepseek.com/favicon.ico',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+    const sampleText = JSON.stringify(sample, null, 2) + '\n'
+    await writeFile(sampleFile, sampleText)
+
+    const first = await createLibraryStore(dataFile, sampleFile).load()
+    assert.equal(first.stats.groups, 1)
+    assert.equal(first.groups[0].name, 'AI')
+    assert.equal(first.capabilities.mutate, true)
+    assert.equal(await readFile(dataFile, 'utf8'), sampleText)
+
+    // A user library already on disk wins over the seed.
+    const custom = { groups: [{ name: 'Mine', lists: [] }] }
+    await writeFile(dataFile, JSON.stringify(custom))
+    const again = await createLibraryStore(dataFile, sampleFile).load()
+    assert.equal(again.groups[0].name, 'Mine')
+
+    // Corrupt data is reported, never replaced by the seed.
+    await writeFile(dataFile, '{')
+    await assert.rejects(
+      () => createLibraryStore(dataFile, sampleFile).load(),
+      (error) => error.code === 'bookmark-file-invalid-json',
+    )
+
+    // Deleting the runtime file brings the seed back.
+    await rm(dataFile)
+    const reseeded = await createLibraryStore(dataFile, sampleFile).load()
+    assert.equal(reseeded.groups[0].name, 'AI')
+
+    // Normal writes persist next to an untouched seed.
+    const mutated = await createLibraryStore(dataFile, sampleFile).mutate(
+      {
+        type: 'create',
+        bookmark: { url: 'https://example.com/' },
+        target: { groupName: 'AI', listTitle: 'DeepSeek' },
+      },
+      '',
+    )
+    assert.equal(mutated.stats.bookmarks, 2)
+    assert.equal(await readFile(sampleFile, 'utf8'), sampleText)
+
+    // Missing seed and missing data is an error, not an empty library.
+    await rm(dataFile)
+    await assert.rejects(
+      () => createLibraryStore(dataFile, path.join(dir, 'missing.sample.json')).load(),
+      (error) => error.code === 'bookmark-file-unreadable',
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 }
 
 async function testEmptyStructures() {
@@ -1389,6 +1467,7 @@ async function testRoutes() {
 }
 
 await test('data model', testDataModel)
+await test('seed bootstrap', testSeedBootstrap)
 await test('empty structures', testEmptyStructures)
 await test('import cleaning', testImportCleaning)
 await test('stable ids', testStableIds)

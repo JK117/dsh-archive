@@ -2,3 +2,7 @@
 # should end up in version control.
 data/*.bak
 data/*.tmp-*
+
+# The runtime library is the user's own data. It is created from
+# data/bookmarks.sample.json on first load and never committed.
+/data/bookmarks.json
